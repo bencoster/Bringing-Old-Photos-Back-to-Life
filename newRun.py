@@ -15,8 +15,7 @@ from skimage.transform import warp
 
 import Face_Enhancement.data as data
 from Face_Enhancement.models.pix2pix_model import Pix2PixModel
-from Face_Enhancement.options.test_options import TestOptions
-from Face_Enhancement.util.visualizer import Visualizer
+import Face_Enhancement.options.test_options as TestOptions
 from Global.detection_models import networks
 from Global.detection_util.util import *
 from Global.models.mapping_model import Pix2PixHDModel_Mapping
@@ -775,50 +774,17 @@ if __name__ == "__main__":
     if not os.path.exists(stage_3_output_dir):
         os.makedirs(stage_3_output_dir)
 
-    opt = TestOptions()
-    opt.initialize(argparse.ArgumentParser())
+    opt = TestOptions.initialize(argparse.ArgumentParser())
     opt.old_face_folder = stage_3_input_face
     opt.old_face_label_folder = stage_3_input_mask
-    opt.tensorboard_log = True
     opt.name = opts.checkpoint_name
     opt.gpu_ids = [int(gpu1)]
-    opt.load_size = 256
-    opt.label_nc = 18
-    opt.no_instance = True
-    opt.preprocess_mode = 'resize'
-    opt.batchSize = 4
     opt.results_dir = stage_3_output_dir
-    opt.no_parsing_map = True
-    opt.dataroot = "./Face_Enhancement/datasets/cityscapes/"
-    opt.serial_batches = False
-    opt.nThreads = 0
-    opt.netG = "spade"
-    opt.ngf = 64
-    opt.num_upsampling_layers = 'normal'
-    opt.crop_size = 256
-    opt.aspect_ratio = 1.0
-    opt.use_vae = False
-    opt.injection_layer = 'all'
-    opt.norm_G = 'spectralspadesyncbatch3x3'
-    opt.norm_D = 'spectralinstance'
-    opt.norm_E = 'spectralinstance'
-    opt.contain_dontcare_label = False
-    opt.semantic_nc = (
-            opt.label_nc + (1 if opt.contain_dontcare_label else 0) + (0 if opt.no_instance else 1)
-    )
-    opt.init_type = 'normal'
-    opt.init_variance = 0.02
-    opt.which_epoch = 'latest'
-    opt.checkpoints_dir = './Face_Enhancement/checkpoints'
-    opt.display_winsize = 256
-    opt.how_many = float("inf")
     dataloader = data.create_dataloader(opt)
 
     model = Pix2PixModel(opt)
     model.eval()
-
-    visualizer = Visualizer(opt)
-
+    
     single_save_url = os.path.join(opt.checkpoints_dir, opt.name, opt.results_dir, "each_img")
 
     if not os.path.exists(single_save_url):
