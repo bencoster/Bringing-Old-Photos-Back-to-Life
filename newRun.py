@@ -56,7 +56,6 @@ def checkNewModel(model, input, name, true_res):
     print("Exported model has been tested with ONNXRuntime, and the result looks good!")
 
 
-
 def new_face_detector(image):
     plugin = IECore()
 
@@ -129,6 +128,72 @@ def new_unet_model(image):
     res = tv.transforms.ToTensor()(res[0][0])
     res = torch.unsqueeze(res, 0)
     return res
+
+
+# Work in progress
+# Actually, we don't know how to use 'current_face' in this implementation
+
+def new_landmark_locator(image, current_face):
+    plugin = IECore()
+
+    device = 'CPU'
+
+    FACE_DETECT_XML = "models/facial-landmarks-35-adas-0002.xml"
+    FACE_DETECT_BIN = "models/facial-landmarks-35-adas-0002.bin"
+    FACE_DETECT_INPUT_KEYS = 'data'
+    FACE_DETECT_OUTPUT_KEYS = 'align_fc3'
+    net_face_detect = plugin.read_network(FACE_DETECT_XML, FACE_DETECT_BIN)
+    # Load the Network using Plugin Device
+
+    exec_face_detect = plugin.load_network(net_face_detect, device)
+
+    # Obtain image_count, channels, height and width
+    n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
+        FACE_DETECT_INPUT_KEYS].input_data.shape
+
+    array = np.array(image)
+
+    w = array.shape[0]  # TODO: check is that correct
+    h = array.shape[1]
+
+    blob = cv.resize(array, (w_face_detect, h_face_detect))  # Resize width & height
+    blob = blob.reshape((n_face_detect, c_face_detect, h_face_detect, w_face_detect))
+    req_handle = exec_face_detect.start_async(
+        request_id=0, inputs={FACE_DETECT_INPUT_KEYS: blob, FACE_DETECT_INPUT_KEYS: current_face})
+
+    time.sleep(1)  # TODO we have to wait a bit before request
+    res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer[0]
+
+    for index in range(0, len(res), 2):
+        res[index] = int(res[index] * w)
+        res[index + 1] = int(res[index + 1] * h)
+
+    x1, y1 = res[0], res[1]  # right corner of left eye
+    x2, y2 = res[2], res[3]  # left corner of left eye
+    x3, y3 = res[4], res[5]  # left corner of right eye
+    x4, y4 = res[6], res[7]  # right corner of right eye
+
+    x_nose, y_nose = res[8], res[9]  # nose
+
+    x_left_mouth, y_left_mouth = res[16], res[17]
+    x_right_mouth, y_right_mouth = res[18], res[19]
+
+    x_left_eye = int((x1 + x2) / 2)
+    y_left_eye = int((y1 + y2) / 2)
+    x_right_eye = int((x3 + x4) / 2)
+    y_right_eye = int((y3 + y4) / 2)
+
+    results = np.array(
+        [
+            [x_left_eye, y_left_eye],
+            [x_right_eye, y_right_eye],
+            [x_nose, y_nose],
+            [x_left_mouth, y_left_mouth],
+            [x_right_mouth, y_right_mouth],
+        ]
+    )
+
+    return results
 
 
 def _standard_face_pts():
@@ -711,7 +776,7 @@ if __name__ == "__main__":
 
             try:
                 generated = model.forward(input, mask)
-                #checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
+                # checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
             except Exception as ex:
                 print(f'Skip {input_name} due to an error:\n {str(ex)}')
                 continue
@@ -780,8 +845,9 @@ if __name__ == "__main__":
         else:
             for face_id, current_face in enumerate(faces):
                 face_landmarks = landmark_locator(image, current_face)
+                face_landmarks_new = new_landmark_locator(image, current_face)
                 current_fl = search(face_landmarks)
-
+                # current_fl = face_landmarks_new
                 affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3,
                                                        inverse=False).params
                 aligned_face = warp(image, affine, output_shape=(256, 256, 3))
@@ -808,7 +874,7 @@ if __name__ == "__main__":
 
     model = Pix2PixModel(opt)
     model.eval()
-    
+
     single_save_url = os.path.join(opt.checkpoints_dir, opt.name, opt.results_dir, "each_img")
 
     if not os.path.exists(single_save_url):
@@ -864,8 +930,9 @@ if __name__ == "__main__":
         for face_id, current_face in enumerate(faces):
             current_face = faces[face_id]
             face_landmarks = landmark_locator(image, current_face)
+            face_landmarks_new = new_landmark_locator(image, current_face)
             current_fl = search(face_landmarks)
-
+            # current_fl = face_landmarks_new
             forward_mask = np.ones_like(image).astype("uint8")
             affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3, inverse=False)
             aligned_face = warp(image, affine, output_shape=(256, 256, 3), preserve_range=True)

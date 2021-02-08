@@ -169,8 +169,18 @@ models = [
     Model(
         name='face-detection-adas-0001.xml',
         url='https://drive.google.com/uc?export=dowload&id=16syJHdW_1m_UO6b2vsApEm-LkMzLsvo4',
-        sha='4ae7758827eea7b7f4e37fffeec3c793042f8dcd ',
+        sha='4ae7758827eea7b7f4e37fffeec3c793042f8dcd',
         filename='models/face-detection-adas-0001.xml'),
+    Model(
+        name='facial-landmarks-35-adas-0002.xml',
+        url='https://drive.google.com/uc?export=dowload&id=1Dl0gP2bX15Efm-RjNB6FxF7ryiEfxwfl',
+        sha='a0c3ed72898c77c76f68a274ab5ee7766093e5f4',
+        filename='models/facial-landmarks-35-adas-0002.xml'),
+    Model(
+        name='facial-landmarks-35-adas-0002.bin',
+        url='https://drive.google.com/uc?export=dowload&id=1SLSVGzV7QTCaHBWqTsyzb2sDWrzoRLeg',
+        sha='aaf693b07978889ad229459c29ed89ca1630e711',
+        filename='models/facial-landmarks-35-adas-0002.bin'),
 ]
 
 # Note: models will be downloaded to current working directory
