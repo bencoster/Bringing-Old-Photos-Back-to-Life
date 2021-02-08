@@ -16,15 +16,45 @@ from skimage.transform import warp
 import Face_Enhancement.data as data
 from Face_Enhancement.models.pix2pix_model import Pix2PixModel
 import Face_Enhancement.options.test_options as TestOptions
-from Global.detection_models import networks
 from Global.detection_util.util import *
-from Global.models.mapping_model import Pix2PixHDModel_Mapping
+from Global.models.mapping_model import Pix2PixHDModel_Mapping, InferenceModel
 
 import numpy as np
 
 import torch.onnx
+import onnx
+import onnxruntime
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+
+def checkNewModel(model, input, name, true_res):
+    name = name + '.onnx'
+    torch.onnx.export(model,  # model being run
+                      input,  # model input (or a tuple for multiple inputs)
+                      name,  # where to save the model (can be a file or file-like object)
+                      export_params=True,  # store the trained parameter weights inside the model file
+                      opset_version=11,
+                      do_constant_folding=True
+                      )
+
+    onnx_model = onnx.load(name)
+    onnx.checker.check_model(onnx_model)
+
+    ort_session = onnxruntime.InferenceSession(name)
+
+    def to_numpy(tensor):
+        return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
+
+    # compute ONNX Runtime output prediction
+    ort_inputs = {ort_session.get_inputs()[0].name: to_numpy(input)}
+    ort_outs = ort_session.run(None, ort_inputs)
+
+    # compare ONNX Runtime and PyTorch results
+    np.testing.assert_allclose(to_numpy(true_res), ort_outs[0], rtol=1e-03, atol=1e-05)
+
+    print("Exported model has been tested with ONNXRuntime, and the result looks good!")
+
 
 
 def new_face_detector(image):
@@ -498,12 +528,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_folder", type=str, default="", help="Test images")
     parser.add_argument("--output_folder", type=str, help="Restored images, please use the absolute path")
-    parser.add_argument("--GPU", type=str, default="-1", help="CPU: -1, GPU: 0,1,2")
     parser.add_argument("--checkpoint_name", type=str, default="Setting_9_epoch_100", help="choose which checkpoint")
     parser.add_argument("--with_scratch", action="store_true")
     opts = parser.parse_args()
 
-    gpu1 = opts.GPU
+    gpu = '-1'
 
     # resolve relative paths before changing directory
     opts.input_folder = os.path.abspath(opts.input_folder)
@@ -522,7 +551,7 @@ if __name__ == "__main__":
 
     if not opts.with_scratch:
         stage_1_command = (f'python test.py --test_mode Full --Quality_restore --test_input '
-                           f'{stage_1_input_dir} --outputs_dir {stage_1_output_dir} --gpu_ids {gpu1}')
+                           f'{stage_1_input_dir} --outputs_dir {stage_1_output_dir} --gpu_ids {gpu}')
         run_cmd(stage_1_command)
     else:
         mask_dir = os.path.join(stage_1_output_dir, "masks")
@@ -532,7 +561,7 @@ if __name__ == "__main__":
         print("initializing the dataloader")
         parser = argparse.ArgumentParser()
 
-        parser.GPU = int(gpu1)
+        parser.GPU = int(gpu)
         parser.test_path = stage_1_input_dir
         parser.output_dir = mask_dir
         parser.input_size = "scale_256"
@@ -580,10 +609,7 @@ if __name__ == "__main__":
 
             scratch_image = torch.unsqueeze(scratch_image, 0)
 
-            if parser.GPU < 0:
-                scratch_image = scratch_image.cpu()
-            else:
-                scratch_image = scratch_image.to(parser.GPU)
+            scratch_image = scratch_image.cpu()
 
             P = torch.sigmoid(new_unet_model(scratch_image))
             P = P.data.cpu()
@@ -602,7 +628,7 @@ if __name__ == "__main__":
         opt.test_input = new_input
         opt.test_mask = new_mask
         opt.outputs_dir = stage_1_output_dir
-        opt.gpu_ids = [int(gpu1)]
+        opt.gpu_ids = [int(gpu)]
         opt.isTrain = False
         opt.resize_or_crop = 'scale_width'
         opt.input_nc = 3
@@ -623,7 +649,7 @@ if __name__ == "__main__":
 
         opt.Quality_restore = False
         parameter_set(opt)
-        model = Pix2PixHDModel_Mapping()
+        model = InferenceModel()
 
         model.initialize(opt)
         model.eval()
@@ -684,7 +710,8 @@ if __name__ == "__main__":
             # Necessary input
 
             try:
-                generated = model.inference(input, mask)
+                generated = model.forward(input, mask)
+                #checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
             except Exception as ex:
                 print(f'Skip {input_name} due to an error:\n {str(ex)}')
                 continue
@@ -736,7 +763,6 @@ if __name__ == "__main__":
     os.makedirs(url, exist_ok=True)
     os.makedirs(save_url, exist_ok=True)
 
-    face_detector = dlib.get_frontal_face_detector()
     landmark_locator = dlib.shape_predictor("Face_Detection/shape_predictor_68_face_landmarks.dat")
 
     map_id = {}
@@ -746,9 +772,7 @@ if __name__ == "__main__":
 
         image = np.array(pil_img)
 
-        start = time.time()
         faces = new_face_detector(image)
-        done = time.time()
 
         if not faces:
             print(f'Warning: There is no face in {x}')
@@ -778,7 +802,7 @@ if __name__ == "__main__":
     opt.old_face_folder = stage_3_input_face
     opt.old_face_label_folder = stage_3_input_mask
     opt.name = opts.checkpoint_name
-    opt.gpu_ids = [int(gpu1)]
+    opt.gpu_ids = [int(gpu)]
     opt.results_dir = stage_3_output_dir
     dataloader = data.create_dataloader(opt)
 
@@ -797,7 +821,6 @@ if __name__ == "__main__":
         generated = model(data_i, mode="inference")
 
         img_path = data_i["path"]
-
         for b in range(generated.shape[0]):
             img_name = os.path.split(img_path[b])[-1]
             save_img_url = os.path.join(single_save_url, img_name)
@@ -831,9 +854,7 @@ if __name__ == "__main__":
         origin_width, origin_height = pil_img.size
         image = np.array(pil_img)
 
-        start = time.time()
         faces = new_face_detector(image)
-        done = time.time()
 
         if not faces:
             print(f'Warning: There is no face in {x}')
