@@ -3,7 +3,6 @@ from subprocess import call
 
 import cv2
 import cv2 as cv
-import dlib
 import skimage.io as io
 import torchvision.transforms as transforms
 from PIL import Image, ImageFile, ImageFilter
@@ -80,10 +79,10 @@ def new_face_detector(image):
     req_handle = exec_face_detect.start_async(
         request_id=0, inputs={FACE_DETECT_INPUT_KEYS: blob})
 
-    time.sleep(1)  # TODO we have to wait a bit before request
+    req_handle.wait()
     res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer
 
-    answer = dlib.rectangles()
+    answer = []
 
     for detection in res[0][0]:  # TODO check if res[0][0] sorted by confidence
         confidence = float(detection[2])
@@ -92,7 +91,7 @@ def new_face_detector(image):
         ymin = int(detection[4] * image.shape[0] - 10)
         xmax = int(detection[5] * image.shape[1] + 10)
         ymax = int(detection[6] * image.shape[0] + 10)
-        face = dlib.rectangle(left=xmin, bottom=ymax, right=xmax, top=ymin)
+        face = {'xmin': xmin, 'xmax': xmax, 'ymin': ymin, 'ymax': ymax}
         if confidence > 0.9:
             answer.append(face)
     return answer
@@ -118,20 +117,23 @@ def new_unet_model(image):
 
     array = np.array(image)[0][0]
 
+    w = array.shape[1]
+    h = array.shape[0]
+
     blob = cv.resize(array, (w_face_detect, h_face_detect))  # Resize width & height
     blob = blob.reshape((n_face_detect, c_face_detect, h_face_detect, w_face_detect))
     req_handle = exec_face_detect.start_async(
         request_id=0, inputs={FACE_DETECT_INPUT_KEYS: blob})
 
-    time.sleep(1)  # TODO we have to wait a bit before request
+    req_handle.wait()
     res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer
-    res = tv.transforms.ToTensor()(res[0][0])
+    # TODO IS IT WRONG TO CHANGE SIZE OF Scratches
+    blob = cv.resize(res[0][0], (w, h))  # Resize width & height
+    blob = blob.reshape((n_face_detect, c_face_detect, h, w))
+    res = tv.transforms.ToTensor()(blob[0][0])
     res = torch.unsqueeze(res, 0)
     return res
 
-
-# Work in progress
-# Actually, we don't know how to use 'current_face' in this implementation
 
 def new_landmark_locator(image, current_face):
     plugin = IECore()
@@ -150,18 +152,18 @@ def new_landmark_locator(image, current_face):
     # Obtain image_count, channels, height and width
     n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
         FACE_DETECT_INPUT_KEYS].input_data.shape
+    face = image[current_face['ymin']:current_face['ymax'], current_face['xmin']:current_face['xmax']].copy()
+    array = np.array(face)
 
-    array = np.array(image)
-
-    w = array.shape[0]  # TODO: check is that correct
-    h = array.shape[1]
+    xmin = current_face['xmin']
+    ymin = current_face['ymin']
 
     blob = cv.resize(array, (w_face_detect, h_face_detect))  # Resize width & height
     blob = blob.reshape((n_face_detect, c_face_detect, h_face_detect, w_face_detect))
     req_handle = exec_face_detect.start_async(
-        request_id=0, inputs={FACE_DETECT_INPUT_KEYS: blob, FACE_DETECT_INPUT_KEYS: current_face})
+        request_id=0, inputs={FACE_DETECT_INPUT_KEYS: blob})
 
-    time.sleep(1)  # TODO we have to wait a bit before request
+    req_handle.wait()
     res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer[0]
 
     for index in range(0, len(res), 2):
@@ -185,11 +187,11 @@ def new_landmark_locator(image, current_face):
 
     results = np.array(
         [
-            [x_left_eye, y_left_eye],
-            [x_right_eye, y_right_eye],
-            [x_nose, y_nose],
-            [x_left_mouth, y_left_mouth],
-            [x_right_mouth, y_right_mouth],
+            [x_left_eye + xmin, y_left_eye + ymin],
+            [x_right_eye + xmin, y_right_eye + ymin],
+            [x_nose + xmin, y_nose + ymin],
+            [x_left_mouth + xmin, y_left_mouth + ymin],
+            [x_right_mouth + xmin, y_right_mouth + ymin],
         ]
     )
 
@@ -828,8 +830,6 @@ if __name__ == "__main__":
     os.makedirs(url, exist_ok=True)
     os.makedirs(save_url, exist_ok=True)
 
-    landmark_locator = dlib.shape_predictor("Face_Detection/shape_predictor_68_face_landmarks.dat")
-
     map_id = {}
     for x in os.listdir(url):
         img_url = os.path.join(url, x)
@@ -844,10 +844,8 @@ if __name__ == "__main__":
             continue
         else:
             for face_id, current_face in enumerate(faces):
-                face_landmarks = landmark_locator(image, current_face)
-                face_landmarks_new = new_landmark_locator(image, current_face)
-                current_fl = search(face_landmarks)
-                # current_fl = face_landmarks_new
+                current_fl = new_landmark_locator(image, current_face)
+
                 affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3,
                                                        inverse=False).params
                 aligned_face = warp(image, affine, output_shape=(256, 256, 3))
@@ -910,9 +908,6 @@ if __name__ == "__main__":
     if not os.path.exists(save_url):
         os.makedirs(save_url)
 
-    face_detector = dlib.get_frontal_face_detector()
-    landmark_locator = dlib.shape_predictor("Face_Detection/shape_predictor_68_face_landmarks.dat")
-
     for x in os.listdir(origin_url):
         img_url = os.path.join(origin_url, x)
         pil_img = Image.open(img_url).convert("RGB")
@@ -928,11 +923,9 @@ if __name__ == "__main__":
 
         blended = image
         for face_id, current_face in enumerate(faces):
-            current_face = faces[face_id]
-            face_landmarks = landmark_locator(image, current_face)
-            face_landmarks_new = new_landmark_locator(image, current_face)
-            current_fl = search(face_landmarks)
-            # current_fl = face_landmarks_new
+
+            current_fl = new_landmark_locator(image, current_face)
+
             forward_mask = np.ones_like(image).astype("uint8")
             affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3, inverse=False)
             aligned_face = warp(image, affine, output_shape=(256, 256, 3), preserve_range=True)
