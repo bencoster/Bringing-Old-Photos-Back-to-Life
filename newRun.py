@@ -616,10 +616,102 @@ if __name__ == "__main__":
     if not os.path.exists(stage_1_output_dir):
         os.makedirs(stage_1_output_dir)
 
+    opt = argparse.ArgumentParser()
+    opt.gpu_ids = [int(gpu)]
+    opt.isTrain = False
+    opt.resize_or_crop = 'scale_width'
+    opt.input_nc = 3
+    opt.output_nc = 3
+    opt.ngf = 64
+    opt.norm = 'instance'
+    opt.spatio_size = 64
+    opt.feat_dim = -1
+    opt.use_segmentation_model = False
+    opt.softmax_temperature = 1.0
+    opt.use_self = False
+    opt.cosin_similarity = False
+    opt.mapping_net_dilation = 1
+    opt.load_pretrain = ''
+    opt.no_load_VAE = False
+    opt.which_epoch = 'latest'
+    opt.use_vae_which_epoch = 'latest'
+
     if not opts.with_scratch:
-        stage_1_command = (f'python test.py --test_mode Full --Quality_restore --test_input '
-                           f'{stage_1_input_dir} --outputs_dir {stage_1_output_dir} --gpu_ids {gpu}')
-        run_cmd(stage_1_command)
+
+        opt.Scratch_and_Quality_restore = False
+        opt.Quality_restore = True
+        opt.test_input = stage_1_input_dir
+        opt.outputs_dir = stage_1_output_dir
+        opt.NL_use_mask = False
+        opt.test_mode = 'Full'
+        opt.non_local = ''
+        parameter_set(opt)
+        model = InferenceModel()
+
+        model.initialize(opt)
+        model.eval()
+
+        if not os.path.exists(f'{opt.outputs_dir}/input_image'):
+            os.makedirs(f'{opt.outputs_dir}/input_image')
+        if not os.path.exists(f'{opt.outputs_dir}/restored_image'):
+            os.makedirs(f'{opt.outputs_dir}/restored_image')
+        if not os.path.exists(f'{opt.outputs_dir}/origin'):
+            os.makedirs(f'{opt.outputs_dir}/origin')
+
+        input_loader = os.listdir(opt.test_input)
+        dataset_size = len(input_loader)
+        input_loader.sort()
+
+       
+
+        img_transform = transforms.Compose(
+            [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
+        )
+        
+
+        for i in range(dataset_size):
+
+            input_name = input_loader[i]
+            input_file = os.path.join(opt.test_input, input_name)
+            if not os.path.isfile(input_file):
+                print(f'Skipping non-file {input_name}')
+                continue
+            input = Image.open(input_file).convert("RGB")
+
+            print(f'Now you are processing {input_name}')
+            input = data_transforms(input, scale=False)
+            origin = input
+            input = img_transform(input)
+            input = input.unsqueeze(0)
+            mask = torch.zeros_like(input)
+            
+            try:
+                generated = model.forward(input, mask)
+                #checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
+            except Exception as ex:
+                print(f'Skip {input_name} due to an error:\n {str(ex)}')
+                continue
+
+            if input_name.endswith(".jpg"):
+                input_name = f'{input_name[:-4]}.png'
+
+            vutils.save_image(
+                (input + 1.0) / 2.0,
+                f'{opt.outputs_dir}/input_image/{input_name}',
+                nrow=1,
+                padding=0,
+                normalize=True,
+            )
+            vutils.save_image(
+                (generated.data.cpu() + 1.0) / 2.0,
+                f'{opt.outputs_dir}/restored_image/{input_name}',
+                nrow=1,
+                padding=0,
+                normalize=True,
+            )
+
+            origin.save(f'{opt.outputs_dir}/origin/{input_name}')
+        
     else:
         mask_dir = os.path.join(stage_1_output_dir, "masks")
         new_input = os.path.join(mask_dir, "input")
@@ -690,30 +782,11 @@ if __name__ == "__main__":
             )
             transformed_image_PIL.save(os.path.join(input_dir, f'{image_name[:-4]}.png'))
 
-        opt = argparse.ArgumentParser()
+        
         opt.Scratch_and_Quality_restore = True
         opt.test_input = new_input
         opt.test_mask = new_mask
         opt.outputs_dir = stage_1_output_dir
-        opt.gpu_ids = [int(gpu)]
-        opt.isTrain = False
-        opt.resize_or_crop = 'scale_width'
-        opt.input_nc = 3
-        opt.output_nc = 3
-        opt.ngf = 64
-        opt.norm = 'instance'
-        opt.spatio_size = 64
-        opt.feat_dim = -1
-        opt.use_segmentation_model = False
-        opt.softmax_temperature = 1.0
-        opt.use_self = False
-        opt.cosin_similarity = False
-        opt.mapping_net_dilation = 1
-        opt.load_pretrain = ''
-        opt.no_load_VAE = False
-        opt.which_epoch = 'latest'
-        opt.use_vae_which_epoch = 'latest'
-
         opt.Quality_restore = False
         parameter_set(opt)
         model = InferenceModel()
@@ -778,7 +851,7 @@ if __name__ == "__main__":
 
             try:
                 generated = model.forward(input, mask)
-                # checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
+                #checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
             except Exception as ex:
                 print(f'Skip {input_name} due to an error:\n {str(ex)}')
                 continue
