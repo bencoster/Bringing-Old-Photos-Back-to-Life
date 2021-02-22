@@ -1,12 +1,10 @@
 import argparse
-from subprocess import call
 
 import cv2
 import cv2 as cv
 import skimage.io as io
 import torchvision.transforms as transforms
 from PIL import Image, ImageFile, ImageFilter
-from matplotlib.patches import Rectangle
 from openvino.inference_engine import IECore
 from skimage import img_as_ubyte
 from skimage.transform import SimilarityTransform
@@ -152,11 +150,15 @@ def new_landmark_locator(image, current_face):
     # Obtain image_count, channels, height and width
     n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
         FACE_DETECT_INPUT_KEYS].input_data.shape
-    face = image[current_face['ymin']:current_face['ymax'], current_face['xmin']:current_face['xmax']].copy()
+    face_xmin = current_face['xmin']
+    face_ymin = current_face['ymin']
+    face_xmax = current_face['xmax']
+    face_ymax = current_face['ymax']
+
+    face = image[face_ymin:face_ymax, face_xmin:face_xmax].copy()
     array = np.array(face)
 
-    xmin = current_face['xmin']
-    ymin = current_face['ymin']
+    h, w = face.shape[0], face.shape[1]
 
     blob = cv.resize(array, (w_face_detect, h_face_detect))  # Resize width & height
     blob = blob.reshape((n_face_detect, c_face_detect, h_face_detect, w_face_detect))
@@ -167,66 +169,18 @@ def new_landmark_locator(image, current_face):
     res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer[0]
 
     for index in range(0, len(res), 2):
-        res[index] = int(res[index] * w)
-        res[index + 1] = int(res[index + 1] * h)
+        res[index] = int(res[index] * w) + face_xmin
+        res[index + 1] = int(res[index + 1] * h) + face_ymin
 
     x1, y1 = res[0], res[1]  # right corner of left eye
     x2, y2 = res[2], res[3]  # left corner of left eye
     x3, y3 = res[4], res[5]  # left corner of right eye
     x4, y4 = res[6], res[7]  # right corner of right eye
 
-    x_nose, y_nose = res[8], res[9]  # nose
+    x_nose, y_nose = int(res[8]), int(res[9])  # nose
 
-    x_left_mouth, y_left_mouth = res[16], res[17]
-    x_right_mouth, y_right_mouth = res[18], res[19]
-
-    x_left_eye = int((x1 + x2) / 2)
-    y_left_eye = int((y1 + y2) / 2)
-    x_right_eye = int((x3 + x4) / 2)
-    y_right_eye = int((y3 + y4) / 2)
-
-    results = np.array(
-        [
-            [x_left_eye + xmin, y_left_eye + ymin],
-            [x_right_eye + xmin, y_right_eye + ymin],
-            [x_nose + xmin, y_nose + ymin],
-            [x_left_mouth + xmin, y_left_mouth + ymin],
-            [x_right_mouth + xmin, y_right_mouth + ymin],
-        ]
-    )
-
-    return results
-
-
-def _standard_face_pts():
-    pts = (np.array([196.0, 226.0, 316.0, 226.0, 256.0,
-                     286.0, 220.0, 360.4, 292.0, 360.4], np.float32) / 256.0 - 1.0)
-    return np.reshape(pts, (5, 2))
-
-
-def _origin_face_pts():
-    pts = np.array([196.0, 226.0, 316.0, 226.0, 256.0,
-                    286.0, 220.0, 360.4, 292.0, 360.4], np.float32)
-    return np.reshape(pts, (5, 2))
-
-
-def get_landmark(face_landmarks, id):
-    part = face_landmarks.part(id)
-    x = part.x
-    y = part.y
-    return x, y
-
-
-def search(face_landmarks):
-    x1, y1 = get_landmark(face_landmarks, 36)
-    x2, y2 = get_landmark(face_landmarks, 39)
-    x3, y3 = get_landmark(face_landmarks, 42)
-    x4, y4 = get_landmark(face_landmarks, 45)
-
-    x_nose, y_nose = get_landmark(face_landmarks, 30)
-
-    x_left_mouth, y_left_mouth = get_landmark(face_landmarks, 48)
-    x_right_mouth, y_right_mouth = get_landmark(face_landmarks, 54)
+    x_left_mouth, y_left_mouth = int(res[16]), int(res[17])
+    x_right_mouth, y_right_mouth = int(res[18]), int(res[19])
 
     x_left_eye = int((x1 + x2) / 2)
     y_left_eye = int((y1 + y2) / 2)
@@ -238,39 +192,18 @@ def search(face_landmarks):
             [x_left_eye, y_left_eye],
             [x_right_eye, y_right_eye],
             [x_nose, y_nose],
-            [x_left_mouth, y_left_mouth],
+            [x_left_mouth, y_left_mouth ],
             [x_right_mouth, y_right_mouth],
         ]
     )
+
     return results
 
 
-def show_detection(image, box, landmark):
-    plt.imshow(image)
-    print(box[2] - box[0])
-    plt.gca().add_patch(
-        Rectangle((box[1], box[0]), box[2] - box[0], box[3] - box[1],
-                  linewidth=1, edgecolor="r", facecolor="none")
-    )
-    plt.scatter(landmark[0][0], landmark[0][1])
-    plt.scatter(landmark[1][0], landmark[1][1])
-    plt.scatter(landmark[2][0], landmark[2][1])
-    plt.scatter(landmark[3][0], landmark[3][1])
-    plt.scatter(landmark[4][0], landmark[4][1])
-    plt.show()
-
-
-def affine2theta(affine, input_w, input_h, target_w, target_h):
-    # param = np.linalg.inv(affine)
-    param = affine
-    theta = np.zeros([2, 3])
-    theta[0, 0] = param[0, 0] * input_h / target_h
-    theta[0, 1] = param[0, 1] * input_w / target_h
-    theta[0, 2] = (2 * param[0, 2] + param[0, 0] * input_h + param[0, 1] * input_w) / target_h - 1
-    theta[1, 0] = param[1, 0] * input_h / target_w
-    theta[1, 1] = param[1, 1] * input_w / target_w
-    theta[1, 2] = (2 * param[1, 2] + param[1, 0] * input_h + param[1, 1] * input_w) / target_w - 1
-    return theta
+def _standard_face_pts():
+    pts = (np.array([196.0, 226.0, 316.0, 226.0, 256.0,
+                     286.0, 220.0, 360.4, 292.0, 360.4], np.float32) / 256.0 - 1.0)
+    return np.reshape(pts, (5, 2))
 
 
 def data_transforms_global(img, full_size, method=Image.BICUBIC):
@@ -301,11 +234,6 @@ def data_transforms_global(img, full_size, method=Image.BICUBIC):
         if (h == ph) and (w == pw):
             return img
         return img.resize((w, h), method)
-
-
-def blend_mask(img, mask):
-    np_img = np.array(img).astype("float")
-    return Image.fromarray((np_img * (1 - mask) + mask * 255.0).astype("uint8")).convert("RGB")
 
 
 def data_transforms(img, method=Image.BILINEAR, scale=False):
@@ -485,81 +413,6 @@ def blur_blending_cv2(im1, im2, mask):
     return im
 
 
-def Poisson_blending(im1, im2, mask):
-    # mask=1-mask
-    mask *= 255
-    kernel = np.ones((10, 10), np.uint8)
-    mask = cv2.erode(mask, kernel, iterations=1)
-    mask /= 255
-    mask = 1 - mask
-    mask *= 255
-
-    mask = mask[:, :, 0]
-    width, height, channels = im1.shape
-    center = (int(height / 2), int(width / 2))
-    result = cv2.seamlessClone(
-        im2.astype("uint8"), im1.astype("uint8"), mask.astype("uint8"), center, cv2.MIXED_CLONE
-    )
-
-    return result / 255.0
-
-
-def Poisson_B(im1, im2, mask, center):
-    mask *= 255
-
-    result = cv2.seamlessClone(
-        im2.astype("uint8"), im1.astype("uint8"), mask.astype("uint8"), center, cv2.NORMAL_CLONE
-    )
-
-    return result / 255
-
-
-def seamless_clone(old_face, new_face, raw_mask):
-    height, width, _ = old_face.shape
-    height = height // 2
-    width = width // 2
-
-    y_indices, x_indices, _ = np.nonzero(raw_mask)
-    y_crop = slice(np.min(y_indices), np.max(y_indices))
-    x_crop = slice(np.min(x_indices), np.max(x_indices))
-    y_center = int(np.rint((np.max(y_indices) + np.min(y_indices)) / 2 + height))
-    x_center = int(np.rint((np.max(x_indices) + np.min(x_indices)) / 2 + width))
-
-    insertion = np.rint(new_face[y_crop, x_crop] * 255.0).astype("uint8")
-    insertion_mask = np.rint(raw_mask[y_crop, x_crop] * 255.0).astype("uint8")
-    insertion_mask[insertion_mask != 0] = 255
-    prior = np.rint(np.pad(old_face * 255.0, ((height, height), (width, width), (0, 0)), "constant")).astype(
-        "uint8"
-    )
-    # if np.sum(insertion_mask) == 0:
-    n_mask = insertion_mask[1:-1, 1:-1, :]
-    n_mask = cv2.copyMakeBorder(n_mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, 0)
-    print(n_mask.shape)
-    x, y, w, h = cv2.boundingRect(n_mask[:, :, 0])
-    if w < 4 or h < 4:
-        blended = prior
-    else:
-        blended = cv2.seamlessClone(
-            insertion,  # pylint: disable=no-member
-            prior,
-            insertion_mask,
-            (x_center, y_center),
-            cv2.NORMAL_CLONE,
-        )  # pylint: disable=no-member
-
-    blended = blended[height:-height, width:-width]
-
-    return blended.astype("float32") / 255.0
-
-
-def run_cmd(command):
-    try:
-        call(command, shell=True)
-    except KeyboardInterrupt:
-        print("Process interrupted")
-        sys.exit(1)
-
-
 def parameter_set(opt):
     # Default parameters
     opt.serial_batches = True  # no shuffle
@@ -662,12 +515,9 @@ if __name__ == "__main__":
         dataset_size = len(input_loader)
         input_loader.sort()
 
-       
-
         img_transform = transforms.Compose(
             [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
         )
-        
 
         for i in range(dataset_size):
 
@@ -684,7 +534,7 @@ if __name__ == "__main__":
             input = img_transform(input)
             input = input.unsqueeze(0)
             mask = torch.zeros_like(input)
-            
+
             try:
                 generated = model.forward(input, mask)
                 #checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
@@ -711,7 +561,7 @@ if __name__ == "__main__":
             )
 
             origin.save(f'{opt.outputs_dir}/origin/{input_name}')
-        
+
     else:
         mask_dir = os.path.join(stage_1_output_dir, "masks")
         new_input = os.path.join(mask_dir, "input")
@@ -782,7 +632,7 @@ if __name__ == "__main__":
             )
             transformed_image_PIL.save(os.path.join(input_dir, f'{image_name[:-4]}.png'))
 
-        
+
         opt.Scratch_and_Quality_restore = True
         opt.test_input = new_input
         opt.test_mask = new_mask
