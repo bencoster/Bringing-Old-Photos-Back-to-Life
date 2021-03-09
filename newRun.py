@@ -200,6 +200,32 @@ def new_landmark_locator(image, current_face):
     return results
 
 
+def new_Pix2PixModel(data_i):
+    plugin = IECore()
+
+    device = 'CPU'
+
+    FACE_DETECT_XML = "models/Pix2Pix.xml"
+    FACE_DETECT_BIN = "models/Pix2Pix.bin"
+    FACE_DETECT_INPUT_KEYS = 'degraded_image'
+    FACE_DETECT_OUTPUT_KEYS = '818'
+    net_face_detect = plugin.read_network(FACE_DETECT_XML, FACE_DETECT_BIN)
+    # Load the Network using Plugin Device
+
+    exec_face_detect = plugin.load_network(net_face_detect, device)
+
+    # Obtain image_count, channels, height and width
+    n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
+        FACE_DETECT_INPUT_KEYS].input_data.shape
+    req_handle = exec_face_detect.start_async(
+        request_id=0, inputs={FACE_DETECT_INPUT_KEYS: data_i})
+
+    req_handle.wait()
+    res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer
+
+    return res
+
+
 def _standard_face_pts():
     pts = (np.array([196.0, 226.0, 316.0, 226.0, 256.0,
                      286.0, 220.0, 360.4, 292.0, 360.4], np.float32) / 256.0 - 1.0)
@@ -793,8 +819,8 @@ if __name__ == "__main__":
     opt.results_dir = stage_3_output_dir
     dataloader = data.create_dataloader(opt)
 
-    model = Pix2PixModel(opt)
-    model.eval()
+    #model = Pix2PixModel(opt)
+    #model.eval()
 
     single_save_url = os.path.join(opt.checkpoints_dir, opt.name, opt.results_dir, "each_img")
 
@@ -804,15 +830,16 @@ if __name__ == "__main__":
     for i, data_i in enumerate(dataloader):
         if i * opt.batchSize >= opt.how_many:
             break
+        #generated_old = model(data_i, mode='inference')
+        for j in range(len(data_i['image'])):
+            generated = new_Pix2PixModel(data_i['image'][j].cpu())
+            generated = torch.tensor(generated)
+            img_path = data_i["path"][j]
 
-        generated = model(data_i, mode="inference")
-
-        img_path = data_i["path"]
-        for b in range(generated.shape[0]):
-            img_name = os.path.split(img_path[b])[-1]
+            img_name = os.path.split(img_path)[-1]
             save_img_url = os.path.join(single_save_url, img_name)
 
-            vutils.save_image((generated[b] + 1) / 2, save_img_url)
+            vutils.save_image((generated + 1) / 2, save_img_url)
 
     print("Finish Stage 3 ...\n")
 

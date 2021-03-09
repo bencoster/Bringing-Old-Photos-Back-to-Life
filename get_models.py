@@ -181,6 +181,16 @@ models = [
         url='https://drive.google.com/uc?export=dowload&id=1SLSVGzV7QTCaHBWqTsyzb2sDWrzoRLeg',
         sha='aaf693b07978889ad229459c29ed89ca1630e711',
         filename='models/facial-landmarks-35-adas-0002.bin'),
+    Model(
+        name='Pix2Pix.xml',
+        url='https://drive.google.com/uc?export=dowload&id=1Cz4p6yaf1uck4aYViYYJ54NTnjR_BQ8-',
+        sha='6c0d4bd39bfb602f58791dc6c247ea9adf54e1fb',
+        filename='models/Pix2Pix.xml'),
+    Model(
+        name='Pix2Pix.bin',
+        downloader=GDrive('1Najox7cEE7x26VvOLLnH3q6ArL16KT8t'),
+        sha='9dc129e003b2a120820a44bbe67184757e0da52a',
+        filename='models/Pix2Pix.bin'),
 ]
 
 # Note: models will be downloaded to current working directory
