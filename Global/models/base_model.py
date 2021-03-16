@@ -20,9 +20,6 @@ class BaseModel(torch.nn.Module):
     def set_input(self, input):
         self.input = input
 
-    def forward(self):
-        pass
-
     # used in test time, no backprop
     def test(self):
         pass

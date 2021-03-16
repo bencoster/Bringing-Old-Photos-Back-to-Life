@@ -14,7 +14,7 @@ import Face_Enhancement.data as data
 from Face_Enhancement.models.pix2pix_model import Pix2PixModel
 import Face_Enhancement.options.test_options as TestOptions
 from Global.detection_util.util import *
-from Global.models.mapping_model import Pix2PixHDModel_Mapping, InferenceModel
+from Global.models.mapping_model import Pix2PixHDModel_Mapping
 
 import numpy as np
 
@@ -27,9 +27,9 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 def checkNewModel(model, input, name, true_res):
     name = name + '.onnx'
-    torch.onnx.export(model,  # model being run
-                      input,  # model input (or a tuple for multiple inputs)
-                      name,  # where to save the model (can be a file or file-like object)
+    torch.onnx.export(model=model,  # model being run
+                      args=input,  # model input (or a tuple for multiple inputs)
+                      f=name,  # where to save the model (can be a file or file-like object)
                       export_params=True,  # store the trained parameter weights inside the model file
                       opset_version=11,
                       do_constant_folding=True
@@ -43,8 +43,14 @@ def checkNewModel(model, input, name, true_res):
     def to_numpy(tensor):
         return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
 
-    # compute ONNX Runtime output prediction
-    ort_inputs = {ort_session.get_inputs()[0].name: to_numpy(input)}
+
+    if type(input) is tuple:
+        if len(ort_session.get_inputs()) > 1:
+            ort_inputs = {ort_session.get_inputs()[i].name: to_numpy(input_i) for i, input_i in enumerate(input)}
+        else:
+            ort_inputs = {ort_session.get_inputs()[0].name: to_numpy(input[0])}
+    else:
+        ort_inputs = {ort_session.get_inputs()[0].name: to_numpy(input)}
     ort_outs = ort_session.run(None, ort_inputs)
 
     # compare ONNX Runtime and PyTorch results
@@ -167,10 +173,14 @@ def new_landmark_locator(image, current_face):
 
     req_handle.wait()
     res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer[0]
+    for index in range(0, len(res), 2):
+        res[index] = w - int(res[index] * w)# + face_xmin
+        res[index + 1] = int(res[index + 1] * h)# + face_ymin
 
     for index in range(0, len(res), 2):
-        res[index] = int(res[index] * w) + face_xmin
-        res[index + 1] = int(res[index + 1] * h) + face_ymin
+        face = cv2.circle(face, (res[index], res[index+1]), radius=1, color=(0, 0, 255), thickness=-1)
+    return face
+
 
     x1, y1 = res[0], res[1]  # right corner of left eye
     x2, y2 = res[2], res[3]  # left corner of left eye
@@ -197,8 +207,6 @@ def new_landmark_locator(image, current_face):
         ]
     )
 
-    return results
-
 
 def new_Pix2PixModel(data_i):
     plugin = IECore()
@@ -219,6 +227,36 @@ def new_Pix2PixModel(data_i):
         FACE_DETECT_INPUT_KEYS].input_data.shape
     req_handle = exec_face_detect.start_async(
         request_id=0, inputs={FACE_DETECT_INPUT_KEYS: data_i})
+
+    req_handle.wait()
+    res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer
+
+    return res
+
+
+def new_Pix2PixModel_scratch(image, mask):
+    plugin = IECore()
+
+    device = 'CPU'
+
+    FACE_DETECT_XML = "models/Pix2PixHDModel_Mapping_scratch.xml"
+    FACE_DETECT_BIN = "models/Pix2PixHDModel_Mapping_scratch.bin"
+    FACE_DETECT_INPUT_KEYS = 'mask.1'
+    FACE_DETECT_OUTPUT_KEYS = '1334'
+    net_face_detect = plugin.read_network(FACE_DETECT_XML, FACE_DETECT_BIN)
+    # Load the Network using Plugin Device
+
+    exec_face_detect = plugin.load_network(net_face_detect, device)
+    array = np.array(mask)[0][0]
+
+    # Obtain image_count, channels, height and width
+    n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
+        FACE_DETECT_INPUT_KEYS].input_data.shape
+    blob = cv.resize(array, (w_face_detect, h_face_detect))  # Resize width & height
+    #blob = blob.transpose((2, 0, 1))  # Change data layout from HWC to CHW
+    blob = blob.reshape((n_face_detect, c_face_detect, h_face_detect, w_face_detect))
+    req_handle = exec_face_detect.start_async(
+        request_id=0, inputs={FACE_DETECT_INPUT_KEYS: blob[0]})
 
     req_handle.wait()
     res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer
@@ -525,7 +563,7 @@ if __name__ == "__main__":
         opt.test_mode = 'Full'
         opt.non_local = ''
         parameter_set(opt)
-        model = InferenceModel()
+        model = Pix2PixHDModel_Mapping()
 
         model.initialize(opt)
         model.eval()
@@ -665,7 +703,7 @@ if __name__ == "__main__":
         opt.outputs_dir = stage_1_output_dir
         opt.Quality_restore = False
         parameter_set(opt)
-        model = InferenceModel()
+        model = Pix2PixHDModel_Mapping()
 
         model.initialize(opt)
         model.eval()
@@ -681,7 +719,7 @@ if __name__ == "__main__":
         dataset_size = len(input_loader)
         input_loader.sort()
 
-        if opt.test_mask is not "":
+        if opt.test_mask:
             mask_loader = os.listdir(opt.test_mask)
             dataset_size = len(os.listdir(opt.test_mask))
             mask_loader.sort()
@@ -727,7 +765,8 @@ if __name__ == "__main__":
 
             try:
                 generated = model.forward(input, mask)
-                #checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
+                #new_generated = torch.from_numpy(new_Pix2PixModel_scratch(input, mask))
+                #checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping_scratch', generated)
             except Exception as ex:
                 print(f'Skip {input_name} due to an error:\n {str(ex)}')
                 continue
@@ -795,14 +834,15 @@ if __name__ == "__main__":
             for face_id, current_face in enumerate(faces):
                 current_fl = new_landmark_locator(image, current_face)
 
-                affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3,
-                                                       inverse=False).params
-                aligned_face = warp(image, affine, output_shape=(256, 256, 3))
+                #affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3,
+                #                                       inverse=False).params
+                #aligned_face = warp(image, affine, output_shape=(256, 256, 3))
                 img_name = f'{x[:-4]}_{face_id + 1}'
-                io.imsave(os.path.join(save_url, f'{img_name}.png'), img_as_ubyte(aligned_face))
+                io.imsave(os.path.join(save_url, f'{img_name}.png'), img_as_ubyte(current_fl))
 
     print("Finish Stage 2 ...\n")
-
+    print("Please check stage 2 folder\n")
+    exit()
     # Stage 3: Face Restore
     print("Running Stage 3: Face Enhancement")
     stage_3_input_mask = "./"
@@ -885,7 +925,7 @@ if __name__ == "__main__":
 
             affine_inverse = affine.inverse
             cur_face = aligned_face
-            if replace_url is not "":
+            if replace_url:
                 face_name = f'{x[:-4]}_{face_id + 1}.png'
                 cur_url = os.path.join(replace_url, face_name)
                 restored_face = Image.open(cur_url).convert("RGB")

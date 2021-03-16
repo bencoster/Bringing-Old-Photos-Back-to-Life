@@ -144,15 +144,8 @@ class Pix2PixHDModel_Mapping(BaseModel):
         self.load_network(self.mapping_net, "mapping_net", opt.which_epoch)
 
     def inference(self, label, inst):
-
-        # use_gpu = len(self.opt.gpu_ids) > 0
-        use_gpu = self.opt.gpu_ids[0] >= 0
-        if use_gpu:
-            input_concat = label.data.cuda()
-            inst_data = inst.cuda()
-        else:
-            input_concat = label.data
-            inst_data = inst
+        input_concat = label.data
+        inst_data = inst
 
         label_feat = self.netG_A.forward(input_concat, flow="enc")
 
@@ -164,8 +157,6 @@ class Pix2PixHDModel_Mapping(BaseModel):
         fake_image = self.netG_B.forward(label_feat_map, flow="dec")
         return fake_image
 
-
-class InferenceModel(Pix2PixHDModel_Mapping):
     def forward(self, label, inst):
         return self.inference(label, inst)
 
