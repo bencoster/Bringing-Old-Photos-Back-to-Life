@@ -11,7 +11,6 @@ from skimage.transform import SimilarityTransform
 from skimage.transform import warp
 
 import Face_Enhancement.data as data
-from Face_Enhancement.models.pix2pix_model import Pix2PixModel
 import Face_Enhancement.options.test_options as TestOptions
 from Global.detection_util.util import *
 from Global.models.mapping_model import Pix2PixHDModel_Mapping
@@ -42,7 +41,6 @@ def checkNewModel(model, input, name, true_res):
 
     def to_numpy(tensor):
         return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
-
 
     if type(input) is tuple:
         if len(ort_session.get_inputs()) > 1:
@@ -139,48 +137,61 @@ def new_unet_model(image):
     return res
 
 
+def get_landmarks(image):
+    ie = IECore()
+
+    model_xml = "models/facial-landmarks-35-adas-0002.xml"
+    model_bin = "models/facial-landmarks-35-adas-0002.bin"
+
+    net = ie.read_network(model=model_xml, weights=model_bin)
+
+    if len(net.inputs["data"].layout) == 4:
+        n, c, h, w = net.inputs["data"].shape
+
+    ih, iw = image.shape[:-1]
+    if (ih, iw) != (h, w):
+        image = cv2.resize(image, (w, h))
+    image = image.transpose((2, 0, 1))
+
+    out_blob = next(iter(net.outputs))
+
+    data = {}
+    data["data"] = image
+
+    exec_net = ie.load_network(network=net, device_name="CPU")
+    res = exec_net.infer(inputs=data)
+    res = res[out_blob]
+    data = res[0]
+    x = []
+    y = []
+    i = 0
+
+    for number, proposal in enumerate(data):
+        if i % 2 == 0:
+            x.append(np.int(proposal * iw))
+        else:
+            y.append(np.int(proposal * ih))
+        i += 1
+    return np.array(x), np.array(y)
+
+
 def new_landmark_locator(image, current_face):
-    plugin = IECore()
 
-    device = 'CPU'
-
-    FACE_DETECT_XML = "models/facial-landmarks-35-adas-0002.xml"
-    FACE_DETECT_BIN = "models/facial-landmarks-35-adas-0002.bin"
-    FACE_DETECT_INPUT_KEYS = 'data'
-    FACE_DETECT_OUTPUT_KEYS = 'align_fc3'
-    net_face_detect = plugin.read_network(FACE_DETECT_XML, FACE_DETECT_BIN)
-    # Load the Network using Plugin Device
-
-    exec_face_detect = plugin.load_network(net_face_detect, device)
-
-    # Obtain image_count, channels, height and width
-    n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
-        FACE_DETECT_INPUT_KEYS].input_data.shape
     face_xmin = current_face['xmin']
     face_ymin = current_face['ymin']
     face_xmax = current_face['xmax']
     face_ymax = current_face['ymax']
 
     face = image[face_ymin:face_ymax, face_xmin:face_xmax].copy()
-    array = np.array(face)
 
-    h, w = face.shape[0], face.shape[1]
+    xs, ys = get_landmarks(face)
 
-    blob = cv.resize(array, (w_face_detect, h_face_detect))  # Resize width & height
-    blob = blob.reshape((n_face_detect, c_face_detect, h_face_detect, w_face_detect))
-    req_handle = exec_face_detect.start_async(
-        request_id=0, inputs={FACE_DETECT_INPUT_KEYS: blob})
+    xs = xs + face_xmin
+    ys = ys + face_ymin
 
-    req_handle.wait()
-    res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer[0]
-    for index in range(0, len(res), 2):
-        res[index] = w - int(res[index] * w)# + face_xmin
-        res[index + 1] = int(res[index + 1] * h)# + face_ymin
+    kp = np.vstack([xs, ys]).T
 
-    for index in range(0, len(res), 2):
-        face = cv2.circle(face, (res[index], res[index+1]), radius=1, color=(0, 0, 255), thickness=-1)
-    return face
-
+    res = kp.flatten()
 
     x1, y1 = res[0], res[1]  # right corner of left eye
     x2, y2 = res[2], res[3]  # left corner of left eye
@@ -202,10 +213,12 @@ def new_landmark_locator(image, current_face):
             [x_left_eye, y_left_eye],
             [x_right_eye, y_right_eye],
             [x_nose, y_nose],
-            [x_left_mouth, y_left_mouth ],
+            [x_left_mouth, y_left_mouth],
             [x_right_mouth, y_right_mouth],
         ]
     )
+
+    return results
 
 
 def new_Pix2PixModel(data_i):
@@ -253,7 +266,7 @@ def new_Pix2PixModel_scratch(image, mask):
     n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
         FACE_DETECT_INPUT_KEYS].input_data.shape
     blob = cv.resize(array, (w_face_detect, h_face_detect))  # Resize width & height
-    #blob = blob.transpose((2, 0, 1))  # Change data layout from HWC to CHW
+    # blob = blob.transpose((2, 0, 1))  # Change data layout from HWC to CHW
     blob = blob.reshape((n_face_detect, c_face_detect, h_face_detect, w_face_detect))
     req_handle = exec_face_detect.start_async(
         request_id=0, inputs={FACE_DETECT_INPUT_KEYS: blob[0]})
@@ -601,7 +614,7 @@ if __name__ == "__main__":
 
             try:
                 generated = model.forward(input, mask)
-                #checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
+                # checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
             except Exception as ex:
                 print(f'Skip {input_name} due to an error:\n {str(ex)}')
                 continue
@@ -696,7 +709,6 @@ if __name__ == "__main__":
             )
             transformed_image_PIL.save(os.path.join(input_dir, f'{image_name[:-4]}.png'))
 
-
         opt.Scratch_and_Quality_restore = True
         opt.test_input = new_input
         opt.test_mask = new_mask
@@ -765,8 +777,8 @@ if __name__ == "__main__":
 
             try:
                 generated = model.forward(input, mask)
-                #new_generated = torch.from_numpy(new_Pix2PixModel_scratch(input, mask))
-                #checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping_scratch', generated)
+                # new_generated = torch.from_numpy(new_Pix2PixModel_scratch(input, mask))
+                # checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping_scratch', generated)
             except Exception as ex:
                 print(f'Skip {input_name} due to an error:\n {str(ex)}')
                 continue
@@ -818,7 +830,6 @@ if __name__ == "__main__":
     os.makedirs(url, exist_ok=True)
     os.makedirs(save_url, exist_ok=True)
 
-    map_id = {}
     for x in os.listdir(url):
         img_url = os.path.join(url, x)
         pil_img = Image.open(img_url).convert("RGB")
@@ -832,17 +843,16 @@ if __name__ == "__main__":
             continue
         else:
             for face_id, current_face in enumerate(faces):
+                img_name = f'{x[:-4]}_{face_id + 1}'
                 current_fl = new_landmark_locator(image, current_face)
 
-                #affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3,
-                #                                       inverse=False).params
-                #aligned_face = warp(image, affine, output_shape=(256, 256, 3))
-                img_name = f'{x[:-4]}_{face_id + 1}'
-                io.imsave(os.path.join(save_url, f'{img_name}.png'), img_as_ubyte(current_fl))
+                affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3,
+                                                       inverse=False).params
+                aligned_face = warp(image, affine, output_shape=(256, 256, 3))
+                io.imsave(os.path.join(save_url, f'{img_name}.png'), img_as_ubyte(aligned_face))
 
     print("Finish Stage 2 ...\n")
-    print("Please check stage 2 folder\n")
-    exit()
+
     # Stage 3: Face Restore
     print("Running Stage 3: Face Enhancement")
     stage_3_input_mask = "./"
@@ -859,9 +869,6 @@ if __name__ == "__main__":
     opt.results_dir = stage_3_output_dir
     dataloader = data.create_dataloader(opt)
 
-    #model = Pix2PixModel(opt)
-    #model.eval()
-
     single_save_url = os.path.join(opt.checkpoints_dir, opt.name, opt.results_dir, "each_img")
 
     if not os.path.exists(single_save_url):
@@ -870,7 +877,6 @@ if __name__ == "__main__":
     for i, data_i in enumerate(dataloader):
         if i * opt.batchSize >= opt.how_many:
             break
-        #generated_old = model(data_i, mode='inference')
         for j in range(len(data_i['image'])):
             generated = new_Pix2PixModel(data_i['image'][j].cpu())
             generated = torch.tensor(generated)
