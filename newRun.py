@@ -138,8 +138,47 @@ def new_unet_model(image):
     res = torch.unsqueeze(res, 0)
     return res
 
+def get_landmarks(image):
+    ie = IECore()
+   
+    model_xml = "models/facial-landmarks-35-adas-0002.xml"
+    model_bin = "models/facial-landmarks-35-adas-0002.bin"
 
-def new_landmark_locator(image, current_face):
+    net = ie.read_network(model=model_xml, weights=model_bin)
+
+
+    if len(net.inputs["data"].layout) == 4:
+        n, c, h, w = net.inputs["data"].shape
+
+
+    ih, iw = image.shape[:-1]
+    if (ih, iw) != (h, w):
+        image = cv2.resize(image, (w, h))
+    image = image.transpose((2, 0, 1))
+
+    out_blob = next(iter(net.outputs))
+
+
+    data = {}
+    data["data"] = image
+
+    exec_net = ie.load_network(network=net, device_name="CPU")
+    res = exec_net.infer(inputs=data)
+    res = res[out_blob]
+    data = res[0]
+    x = []
+    y = []
+    i = 0
+
+    for number, proposal in enumerate(data):
+        if (i % 2 == 0):
+            x.append(np.int(proposal * iw))
+        else:
+            y.append(np.int(proposal * ih))
+        i += 1
+    return np.array(x), np.array(y)
+
+def new_landmark_locator(image, current_face, save_path=None):
     plugin = IECore()
 
     device = 'CPU'
@@ -161,26 +200,35 @@ def new_landmark_locator(image, current_face):
     face_xmax = current_face['xmax']
     face_ymax = current_face['ymax']
 
+
+    output_h, output_w = net_face_detect.outputs[FACE_DETECT_OUTPUT_KEYS].shape
+
+    # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     face = image[face_ymin:face_ymax, face_xmin:face_xmax].copy()
-    array = np.array(face)
 
-    h, w = face.shape[0], face.shape[1]
+    # face = cv2.imread("/home/ssl/Documents/test_landmarks2.png")
+    face_c = face.copy()
+    xs, ys = get_landmarks(face)
+    for x,y in zip(xs, ys):
+        face_c = cv2.circle(face_c, (x, y), radius=2, color=(0, 255, 0), thickness=-1)
+    cv.imshow("face_c", face_c)
+    cv2.waitKey(0)
 
-    blob = cv.resize(array, (w_face_detect, h_face_detect))  # Resize width & height
-    blob = blob.reshape((n_face_detect, c_face_detect, h_face_detect, w_face_detect))
-    req_handle = exec_face_detect.start_async(
-        request_id=0, inputs={FACE_DETECT_INPUT_KEYS: blob})
+    xs = xs + face_xmin
+    ys = ys + face_ymin
 
-    req_handle.wait()
-    res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer[0]
+    kp = np.vstack([xs,ys]).T
+    debug_img = image.copy()
+
+    res = kp.flatten()
+
     for index in range(0, len(res), 2):
-        res[index] = w - int(res[index] * w)# + face_xmin
-        res[index + 1] = int(res[index + 1] * h)# + face_ymin
-
-    for index in range(0, len(res), 2):
-        face = cv2.circle(face, (res[index], res[index+1]), radius=1, color=(0, 0, 255), thickness=-1)
-    return face
-
+        debug_img = cv2.circle(debug_img, (res[index], res[index+1]), radius=2, color=(0, 255, 0), thickness=-1)
+    debug_img = cv.resize(debug_img, (512, 512))
+    io.imsave(save_path, img_as_ubyte(debug_img))
+    debug_img = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
+    cv.imshow("debug_img", debug_img)
+    cv.waitKey(0)
 
     x1, y1 = res[0], res[1]  # right corner of left eye
     x2, y2 = res[2], res[3]  # left corner of left eye
@@ -206,6 +254,8 @@ def new_landmark_locator(image, current_face):
             [x_right_mouth, y_right_mouth],
         ]
     )
+
+    return results
 
 
 def new_Pix2PixModel(data_i):
@@ -533,274 +583,275 @@ if __name__ == "__main__":
     if not os.path.exists(stage_1_output_dir):
         os.makedirs(stage_1_output_dir)
 
-    opt = argparse.ArgumentParser()
-    opt.gpu_ids = [int(gpu)]
-    opt.isTrain = False
-    opt.resize_or_crop = 'scale_width'
-    opt.input_nc = 3
-    opt.output_nc = 3
-    opt.ngf = 64
-    opt.norm = 'instance'
-    opt.spatio_size = 64
-    opt.feat_dim = -1
-    opt.use_segmentation_model = False
-    opt.softmax_temperature = 1.0
-    opt.use_self = False
-    opt.cosin_similarity = False
-    opt.mapping_net_dilation = 1
-    opt.load_pretrain = ''
-    opt.no_load_VAE = False
-    opt.which_epoch = 'latest'
-    opt.use_vae_which_epoch = 'latest'
+    if True:
+        opt = argparse.ArgumentParser()
+        opt.gpu_ids = [int(gpu)]
+        opt.isTrain = False
+        opt.resize_or_crop = 'scale_width'
+        opt.input_nc = 3
+        opt.output_nc = 3
+        opt.ngf = 64
+        opt.norm = 'instance'
+        opt.spatio_size = 64
+        opt.feat_dim = -1
+        opt.use_segmentation_model = False
+        opt.softmax_temperature = 1.0
+        opt.use_self = False
+        opt.cosin_similarity = False
+        opt.mapping_net_dilation = 1
+        opt.load_pretrain = ''
+        opt.no_load_VAE = False
+        opt.which_epoch = 'latest'
+        opt.use_vae_which_epoch = 'latest'
 
-    if not opts.with_scratch:
+        if not opts.with_scratch:
 
-        opt.Scratch_and_Quality_restore = False
-        opt.Quality_restore = True
-        opt.test_input = stage_1_input_dir
-        opt.outputs_dir = stage_1_output_dir
-        opt.NL_use_mask = False
-        opt.test_mode = 'Full'
-        opt.non_local = ''
-        parameter_set(opt)
-        model = Pix2PixHDModel_Mapping()
+            opt.Scratch_and_Quality_restore = False
+            opt.Quality_restore = True
+            opt.test_input = stage_1_input_dir
+            opt.outputs_dir = stage_1_output_dir
+            opt.NL_use_mask = False
+            opt.test_mode = 'Full'
+            opt.non_local = ''
+            parameter_set(opt)
+            model = Pix2PixHDModel_Mapping()
 
-        model.initialize(opt)
-        model.eval()
+            model.initialize(opt)
+            model.eval()
 
-        if not os.path.exists(f'{opt.outputs_dir}/input_image'):
-            os.makedirs(f'{opt.outputs_dir}/input_image')
-        if not os.path.exists(f'{opt.outputs_dir}/restored_image'):
-            os.makedirs(f'{opt.outputs_dir}/restored_image')
-        if not os.path.exists(f'{opt.outputs_dir}/origin'):
-            os.makedirs(f'{opt.outputs_dir}/origin')
+            if not os.path.exists(f'{opt.outputs_dir}/input_image'):
+                os.makedirs(f'{opt.outputs_dir}/input_image')
+            if not os.path.exists(f'{opt.outputs_dir}/restored_image'):
+                os.makedirs(f'{opt.outputs_dir}/restored_image')
+            if not os.path.exists(f'{opt.outputs_dir}/origin'):
+                os.makedirs(f'{opt.outputs_dir}/origin')
 
-        input_loader = os.listdir(opt.test_input)
-        dataset_size = len(input_loader)
-        input_loader.sort()
+            input_loader = os.listdir(opt.test_input)
+            dataset_size = len(input_loader)
+            input_loader.sort()
 
-        img_transform = transforms.Compose(
-            [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
-        )
-
-        for i in range(dataset_size):
-
-            input_name = input_loader[i]
-            input_file = os.path.join(opt.test_input, input_name)
-            if not os.path.isfile(input_file):
-                print(f'Skipping non-file {input_name}')
-                continue
-            input = Image.open(input_file).convert("RGB")
-
-            print(f'Now you are processing {input_name}')
-            input = data_transforms(input, scale=False)
-            origin = input
-            input = img_transform(input)
-            input = input.unsqueeze(0)
-            mask = torch.zeros_like(input)
-
-            try:
-                generated = model.forward(input, mask)
-                #checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
-            except Exception as ex:
-                print(f'Skip {input_name} due to an error:\n {str(ex)}')
-                continue
-
-            if input_name.endswith(".jpg"):
-                input_name = f'{input_name[:-4]}.png'
-
-            vutils.save_image(
-                (input + 1.0) / 2.0,
-                f'{opt.outputs_dir}/input_image/{input_name}',
-                nrow=1,
-                padding=0,
-                normalize=True,
-            )
-            vutils.save_image(
-                (generated.data.cpu() + 1.0) / 2.0,
-                f'{opt.outputs_dir}/restored_image/{input_name}',
-                nrow=1,
-                padding=0,
-                normalize=True,
+            img_transform = transforms.Compose(
+                [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
             )
 
-            origin.save(f'{opt.outputs_dir}/origin/{input_name}')
+            for i in range(dataset_size):
 
-    else:
-        mask_dir = os.path.join(stage_1_output_dir, "masks")
-        new_input = os.path.join(mask_dir, "input")
-        new_mask = os.path.join(mask_dir, "mask")
+                input_name = input_loader[i]
+                input_file = os.path.join(opt.test_input, input_name)
+                if not os.path.isfile(input_file):
+                    print(f'Skipping non-file {input_name}')
+                    continue
+                input = Image.open(input_file).convert("RGB")
 
-        print("initializing the dataloader")
-        parser = argparse.ArgumentParser()
-
-        parser.GPU = int(gpu)
-        parser.test_path = stage_1_input_dir
-        parser.output_dir = mask_dir
-        parser.input_size = "scale_256"
-
-        # dataloader and transformation
-        print(f'directory of testing image: {parser.test_path}')
-        imagelist = os.listdir(parser.test_path)
-        imagelist.sort()
-        total_iter = 0
-
-        P_matrix = {}
-        save_url = os.path.join(parser.output_dir)
-        mkdir_if_not(save_url)
-
-        input_dir = os.path.join(save_url, "input")
-        output_dir = os.path.join(save_url, "mask")
-        # blend_output_dir=os.path.join(save_url, 'blend_output')
-        mkdir_if_not(input_dir)
-        mkdir_if_not(output_dir)
-        # mkdir_if_not(blend_output_dir)
-
-        idx = 0
-
-        for image_name in imagelist:
-
-            idx += 1
-
-            print("processing", image_name)
-
-            results = []
-            scratch_file = os.path.join(parser.test_path, image_name)
-            if not os.path.isfile(scratch_file):
-                print(f'Skipping non-file {image_name}')
-                continue
-            scratch_image = Image.open(scratch_file).convert("RGB")
-
-            w, h = scratch_image.size
-
-            transformed_image_PIL = data_transforms_global(scratch_image, parser.input_size)
-
-            scratch_image = transformed_image_PIL.convert("L")
-            scratch_image = tv.transforms.ToTensor()(scratch_image)
-
-            scratch_image = tv.transforms.Normalize([0.5], [0.5])(scratch_image)
-
-            scratch_image = torch.unsqueeze(scratch_image, 0)
-
-            scratch_image = scratch_image.cpu()
-
-            P = torch.sigmoid(new_unet_model(scratch_image))
-            P = P.data.cpu()
-
-            tv.utils.save_image(
-                (P >= 0.4).float(),
-                os.path.join(output_dir, f'{image_name[:-4]}.png'),
-                nrow=1,
-                padding=0,
-                normalize=True,
-            )
-            transformed_image_PIL.save(os.path.join(input_dir, f'{image_name[:-4]}.png'))
-
-
-        opt.Scratch_and_Quality_restore = True
-        opt.test_input = new_input
-        opt.test_mask = new_mask
-        opt.outputs_dir = stage_1_output_dir
-        opt.Quality_restore = False
-        parameter_set(opt)
-        model = Pix2PixHDModel_Mapping()
-
-        model.initialize(opt)
-        model.eval()
-
-        if not os.path.exists(f'{opt.outputs_dir}/input_image'):
-            os.makedirs(f'{opt.outputs_dir}/input_image')
-        if not os.path.exists(f'{opt.outputs_dir}/restored_image'):
-            os.makedirs(f'{opt.outputs_dir}/restored_image')
-        if not os.path.exists(f'{opt.outputs_dir}/origin'):
-            os.makedirs(f'{opt.outputs_dir}/origin')
-
-        input_loader = os.listdir(opt.test_input)
-        dataset_size = len(input_loader)
-        input_loader.sort()
-
-        if opt.test_mask:
-            mask_loader = os.listdir(opt.test_mask)
-            dataset_size = len(os.listdir(opt.test_mask))
-            mask_loader.sort()
-
-        img_transform = transforms.Compose(
-            [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
-        )
-        mask_transform = transforms.ToTensor()
-
-        for i in range(dataset_size):
-
-            input_name = input_loader[i]
-            input_file = os.path.join(opt.test_input, input_name)
-            if not os.path.isfile(input_file):
-                print(f'Skipping non-file {input_name}')
-                continue
-            input = Image.open(input_file).convert("RGB")
-
-            print(f'Now you are processing {input_name}')
-
-            if opt.NL_use_mask:
-                mask_name = mask_loader[i]
-                mask = Image.open(os.path.join(opt.test_mask, mask_name)).convert("RGB")
-                origin = input
-                input = irregular_hole_synthesize(input, mask)
-                mask = mask_transform(mask)
-                mask = mask[:1, :, :]  # Convert to single channel
-                mask = mask.unsqueeze(0)
-                input = img_transform(input)
-                input = input.unsqueeze(0)
-            else:
-                if opt.test_mode == "Scale":
-                    input = data_transforms(input, scale=True)
-                if opt.test_mode == "Full":
-                    input = data_transforms(input, scale=False)
-                if opt.test_mode == "Crop":
-                    input = data_transforms_rgb_old(input)
+                print(f'Now you are processing {input_name}')
+                input = data_transforms(input, scale=False)
                 origin = input
                 input = img_transform(input)
                 input = input.unsqueeze(0)
                 mask = torch.zeros_like(input)
-            # Necessary input
 
-            try:
-                generated = model.forward(input, mask)
-                #new_generated = torch.from_numpy(new_Pix2PixModel_scratch(input, mask))
-                #checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping_scratch', generated)
-            except Exception as ex:
-                print(f'Skip {input_name} due to an error:\n {str(ex)}')
-                continue
+                try:
+                    generated = model.forward(input, mask)
+                    checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
+                except Exception as ex:
+                    print(f'Skip {input_name} due to an error:\n {str(ex)}')
+                    continue
 
-            if input_name.endswith(".jpg"):
-                input_name = f'{input_name[:-4]}.png'
+                if input_name.endswith(".jpg"):
+                    input_name = f'{input_name[:-4]}.png'
 
-            vutils.save_image(
-                (input + 1.0) / 2.0,
-                f'{opt.outputs_dir}/input_image/{input_name}',
-                nrow=1,
-                padding=0,
-                normalize=True,
+                vutils.save_image(
+                    (input + 1.0) / 2.0,
+                    f'{opt.outputs_dir}/input_image/{input_name}',
+                    nrow=1,
+                    padding=0,
+                    normalize=True,
+                )
+                vutils.save_image(
+                    (generated.data.cpu() + 1.0) / 2.0,
+                    f'{opt.outputs_dir}/restored_image/{input_name}',
+                    nrow=1,
+                    padding=0,
+                    normalize=True,
+                )
+
+                origin.save(f'{opt.outputs_dir}/origin/{input_name}')
+
+        else:
+            mask_dir = os.path.join(stage_1_output_dir, "masks")
+            new_input = os.path.join(mask_dir, "input")
+            new_mask = os.path.join(mask_dir, "mask")
+
+            print("initializing the dataloader")
+            parser = argparse.ArgumentParser()
+
+            parser.GPU = int(gpu)
+            parser.test_path = stage_1_input_dir
+            parser.output_dir = mask_dir
+            parser.input_size = "scale_256"
+
+            # dataloader and transformation
+            print(f'directory of testing image: {parser.test_path}')
+            imagelist = os.listdir(parser.test_path)
+            imagelist.sort()
+            total_iter = 0
+
+            P_matrix = {}
+            save_url = os.path.join(parser.output_dir)
+            mkdir_if_not(save_url)
+
+            input_dir = os.path.join(save_url, "input")
+            output_dir = os.path.join(save_url, "mask")
+            # blend_output_dir=os.path.join(save_url, 'blend_output')
+            mkdir_if_not(input_dir)
+            mkdir_if_not(output_dir)
+            # mkdir_if_not(blend_output_dir)
+
+            idx = 0
+
+            for image_name in imagelist:
+
+                idx += 1
+
+                print("processing", image_name)
+
+                results = []
+                scratch_file = os.path.join(parser.test_path, image_name)
+                if not os.path.isfile(scratch_file):
+                    print(f'Skipping non-file {image_name}')
+                    continue
+                scratch_image = Image.open(scratch_file).convert("RGB")
+
+                w, h = scratch_image.size
+
+                transformed_image_PIL = data_transforms_global(scratch_image, parser.input_size)
+
+                scratch_image = transformed_image_PIL.convert("L")
+                scratch_image = tv.transforms.ToTensor()(scratch_image)
+
+                scratch_image = tv.transforms.Normalize([0.5], [0.5])(scratch_image)
+
+                scratch_image = torch.unsqueeze(scratch_image, 0)
+
+                scratch_image = scratch_image.cpu()
+
+                P = torch.sigmoid(new_unet_model(scratch_image))
+                P = P.data.cpu()
+
+                tv.utils.save_image(
+                    (P >= 0.4).float(),
+                    os.path.join(output_dir, f'{image_name[:-4]}.png'),
+                    nrow=1,
+                    padding=0,
+                    normalize=True,
+                )
+                transformed_image_PIL.save(os.path.join(input_dir, f'{image_name[:-4]}.png'))
+
+
+            opt.Scratch_and_Quality_restore = True
+            opt.test_input = new_input
+            opt.test_mask = new_mask
+            opt.outputs_dir = stage_1_output_dir
+            opt.Quality_restore = False
+            parameter_set(opt)
+            model = Pix2PixHDModel_Mapping()
+
+            model.initialize(opt)
+            model.eval()
+
+            if not os.path.exists(f'{opt.outputs_dir}/input_image'):
+                os.makedirs(f'{opt.outputs_dir}/input_image')
+            if not os.path.exists(f'{opt.outputs_dir}/restored_image'):
+                os.makedirs(f'{opt.outputs_dir}/restored_image')
+            if not os.path.exists(f'{opt.outputs_dir}/origin'):
+                os.makedirs(f'{opt.outputs_dir}/origin')
+
+            input_loader = os.listdir(opt.test_input)
+            dataset_size = len(input_loader)
+            input_loader.sort()
+
+            if opt.test_mask:
+                mask_loader = os.listdir(opt.test_mask)
+                dataset_size = len(os.listdir(opt.test_mask))
+                mask_loader.sort()
+
+            img_transform = transforms.Compose(
+                [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
             )
-            vutils.save_image(
-                (generated.data.cpu() + 1.0) / 2.0,
-                f'{opt.outputs_dir}/restored_image/{input_name}',
-                nrow=1,
-                padding=0,
-                normalize=True,
-            )
+            mask_transform = transforms.ToTensor()
 
-            origin.save(f'{opt.outputs_dir}/origin/{input_name}')
+            for i in range(dataset_size):
 
-    # Solve the case when there is no face in the old photo
-    stage_1_results = os.path.join(stage_1_output_dir, "restored_image")
-    stage_4_output_dir = os.path.join(opts.output_folder, "final_output")
-    if not os.path.exists(stage_4_output_dir):
-        os.makedirs(stage_4_output_dir)
-    for x in os.listdir(stage_1_results):
-        img_dir = os.path.join(stage_1_results, x)
-        shutil.copy(img_dir, stage_4_output_dir)
+                input_name = input_loader[i]
+                input_file = os.path.join(opt.test_input, input_name)
+                if not os.path.isfile(input_file):
+                    print(f'Skipping non-file {input_name}')
+                    continue
+                input = Image.open(input_file).convert("RGB")
 
-    print("Finish Stage 1 ...\n")
+                print(f'Now you are processing {input_name}')
+
+                if opt.NL_use_mask:
+                    mask_name = mask_loader[i]
+                    mask = Image.open(os.path.join(opt.test_mask, mask_name)).convert("RGB")
+                    origin = input
+                    input = irregular_hole_synthesize(input, mask)
+                    mask = mask_transform(mask)
+                    mask = mask[:1, :, :]  # Convert to single channel
+                    mask = mask.unsqueeze(0)
+                    input = img_transform(input)
+                    input = input.unsqueeze(0)
+                else:
+                    if opt.test_mode == "Scale":
+                        input = data_transforms(input, scale=True)
+                    if opt.test_mode == "Full":
+                        input = data_transforms(input, scale=False)
+                    if opt.test_mode == "Crop":
+                        input = data_transforms_rgb_old(input)
+                    origin = input
+                    input = img_transform(input)
+                    input = input.unsqueeze(0)
+                    mask = torch.zeros_like(input)
+                # Necessary input
+
+                try:
+                    generated = model.forward(input, mask)
+                    # new_generated = torch.from_numpy(new_Pix2PixModel_scratch(input, mask))
+                    checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping_scratch', generated)
+                except Exception as ex:
+                    print(f'Skip {input_name} due to an error:\n {str(ex)}')
+                    continue
+
+                if input_name.endswith(".jpg"):
+                    input_name = f'{input_name[:-4]}.png'
+
+                vutils.save_image(
+                    (input + 1.0) / 2.0,
+                    f'{opt.outputs_dir}/input_image/{input_name}',
+                    nrow=1,
+                    padding=0,
+                    normalize=True,
+                )
+                vutils.save_image(
+                    (generated.data.cpu() + 1.0) / 2.0,
+                    f'{opt.outputs_dir}/restored_image/{input_name}',
+                    nrow=1,
+                    padding=0,
+                    normalize=True,
+                )
+
+                origin.save(f'{opt.outputs_dir}/origin/{input_name}')
+
+        # Solve the case when there is no face in the old photo
+        stage_1_results = os.path.join(stage_1_output_dir, "restored_image")
+        stage_4_output_dir = os.path.join(opts.output_folder, "final_output")
+        if not os.path.exists(stage_4_output_dir):
+            os.makedirs(stage_4_output_dir)
+        for x in os.listdir(stage_1_results):
+            img_dir = os.path.join(stage_1_results, x)
+            shutil.copy(img_dir, stage_4_output_dir)
+
+        print("Finish Stage 1 ...\n")
 
     # Stage 2: Face Detection
 
@@ -832,17 +883,19 @@ if __name__ == "__main__":
             continue
         else:
             for face_id, current_face in enumerate(faces):
-                current_fl = new_landmark_locator(image, current_face)
-
-                #affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3,
-                #                                       inverse=False).params
-                #aligned_face = warp(image, affine, output_shape=(256, 256, 3))
                 img_name = f'{x[:-4]}_{face_id + 1}'
-                io.imsave(os.path.join(save_url, f'{img_name}.png'), img_as_ubyte(current_fl))
+                os.makedirs(os.path.join(opts.output_folder, "debug_stage2"), exist_ok=True)
+                save_path = os.path.join(opts.output_folder, "debug_stage2", f'{img_name}.png')
+                current_fl = new_landmark_locator(image, current_face, save_path)
 
-    print("Finish Stage 2 ...\n")
-    print("Please check stage 2 folder\n")
-    exit()
+                affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3,
+                                                      inverse=False).params
+                aligned_face = warp(image, affine, output_shape=(256, 256, 3))
+                io.imsave(os.path.join(save_url, f'{img_name}.png'), img_as_ubyte(aligned_face))
+
+    # print("Finish Stage 2 ...\n")
+    # print("Please check stage 2 folder\n")
+    # exit()
     # Stage 3: Face Restore
     print("Running Stage 3: Face Enhancement")
     stage_3_input_mask = "./"
@@ -870,7 +923,7 @@ if __name__ == "__main__":
     for i, data_i in enumerate(dataloader):
         if i * opt.batchSize >= opt.how_many:
             break
-        #generated_old = model(data_i, mode='inference')
+        generated_old = model(data_i, mode='inference')
         for j in range(len(data_i['image'])):
             generated = new_Pix2PixModel(data_i['image'][j].cpu())
             generated = torch.tensor(generated)
