@@ -11,28 +11,33 @@ from skimage.transform import SimilarityTransform
 from skimage.transform import warp
 
 import Face_Enhancement.data as data
+from Face_Enhancement.models.pix2pix_model import Pix2PixModel
+from Face_Enhancement.models.pix2pix_fake import Pix2PixModel as Pix2PixModelFake
 import Face_Enhancement.options.test_options as TestOptions
 from Global.detection_util.util import *
-from Global.models.mapping_model import Pix2PixHDModel_Mapping
+from Global.models.mapping_model import Pix2PixHDModel_Mapping, Pix2PixHDModel_Mapping_No_Scratch
 
 import numpy as np
 
 import torch.onnx
+import torch.nn as nn
 import onnx
 import onnxruntime
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
-def checkNewModel(model, input, name, true_res):
+def checkNewModel(model, input, name, true_res, input_names=None):
     name = name + '.onnx'
-    torch.onnx.export(model=model,  # model being run
-                      args=input,  # model input (or a tuple for multiple inputs)
-                      f=name,  # where to save the model (can be a file or file-like object)
-                      export_params=True,  # store the trained parameter weights inside the model file
-                      opset_version=11,
-                      do_constant_folding=True
-                      )
+    with torch.no_grad():
+        torch.onnx.export(model,  # model being run
+                        input,  # model input (or a tuple for multiple inputs)
+                        name,  # where to save the model (can be a file or file-like object)
+                        input_names=input_names,
+                        export_params=True,  # store the trained parameter weights inside the model file
+                        opset_version=11,
+                        do_constant_folding=True
+                        )
 
     onnx_model = onnx.load(name)
     onnx.checker.check_model(onnx_model)
@@ -42,6 +47,7 @@ def checkNewModel(model, input, name, true_res):
     def to_numpy(tensor):
         return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
 
+    # compute ONNX Runtime output prediction
     if type(input) is tuple:
         if len(ort_session.get_inputs()) > 1:
             ort_inputs = {ort_session.get_inputs()[i].name: to_numpy(input_i) for i, input_i in enumerate(input)}
@@ -52,7 +58,7 @@ def checkNewModel(model, input, name, true_res):
     ort_outs = ort_session.run(None, ort_inputs)
 
     # compare ONNX Runtime and PyTorch results
-    np.testing.assert_allclose(to_numpy(true_res), ort_outs[0], rtol=1e-03, atol=1e-05)
+    np.testing.assert_allclose(to_numpy(true_res), ort_outs[0], rtol=1e01, atol=1e-03)
 
     print("Exported model has been tested with ONNXRuntime, and the result looks good!")
 
@@ -136,7 +142,6 @@ def new_unet_model(image):
     res = torch.unsqueeze(res, 0)
     return res
 
-
 def get_landmarks(image):
     ie = IECore()
 
@@ -145,8 +150,10 @@ def get_landmarks(image):
 
     net = ie.read_network(model=model_xml, weights=model_bin)
 
+
     if len(net.inputs["data"].layout) == 4:
         n, c, h, w = net.inputs["data"].shape
+
 
     ih, iw = image.shape[:-1]
     if (ih, iw) != (h, w):
@@ -154,6 +161,7 @@ def get_landmarks(image):
     image = image.transpose((2, 0, 1))
 
     out_blob = next(iter(net.outputs))
+
 
     data = {}
     data["data"] = image
@@ -167,31 +175,65 @@ def get_landmarks(image):
     i = 0
 
     for number, proposal in enumerate(data):
-        if i % 2 == 0:
+        if (i % 2 == 0):
             x.append(np.int(proposal * iw))
         else:
             y.append(np.int(proposal * ih))
         i += 1
     return np.array(x), np.array(y)
 
+def new_landmark_locator(image, current_face, save_path=None):
+    plugin = IECore()
 
-def new_landmark_locator(image, current_face):
+    device = 'CPU'
 
+    FACE_DETECT_XML = "models/facial-landmarks-35-adas-0002.xml"
+    FACE_DETECT_BIN = "models/facial-landmarks-35-adas-0002.bin"
+    FACE_DETECT_INPUT_KEYS = 'data'
+    FACE_DETECT_OUTPUT_KEYS = 'align_fc3'
+    net_face_detect = plugin.read_network(FACE_DETECT_XML, FACE_DETECT_BIN)
+    # Load the Network using Plugin Device
+
+    exec_face_detect = plugin.load_network(net_face_detect, device)
+
+    # Obtain image_count, channels, height and width
+    n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
+        FACE_DETECT_INPUT_KEYS].input_data.shape
     face_xmin = current_face['xmin']
     face_ymin = current_face['ymin']
     face_xmax = current_face['xmax']
     face_ymax = current_face['ymax']
 
+
+    output_h, output_w = net_face_detect.outputs[FACE_DETECT_OUTPUT_KEYS].shape
+
+    # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     face = image[face_ymin:face_ymax, face_xmin:face_xmax].copy()
 
+    # face = cv2.imread("/home/ssl/Documents/test_landmarks2.png")
+    face_c = face.copy()
     xs, ys = get_landmarks(face)
+    for x,y in zip(xs, ys):
+        face_c = cv2.circle(face_c, (x, y), radius=2, color=(0, 255, 0), thickness=-1)
+    # cv.imshow("face_c", face_c)
+    # cv2.waitKey(0)
 
     xs = xs + face_xmin
     ys = ys + face_ymin
 
-    kp = np.vstack([xs, ys]).T
+    kp = np.vstack([xs,ys]).T
+    debug_img = image.copy()
 
     res = kp.flatten()
+
+    if False:
+        for index in range(0, len(res), 2):
+            debug_img = cv2.circle(debug_img, (res[index], res[index+1]), radius=2, color=(0, 255, 0), thickness=-1)
+        debug_img = cv.resize(debug_img, (512, 512))
+        io.imsave(save_path, img_as_ubyte(debug_img))
+        debug_img = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
+        cv.imshow("debug_img", debug_img)
+        cv.waitKey(0)
 
     x1, y1 = res[0], res[1]  # right corner of left eye
     x2, y2 = res[2], res[3]  # left corner of left eye
@@ -213,7 +255,7 @@ def new_landmark_locator(image, current_face):
             [x_left_eye, y_left_eye],
             [x_right_eye, y_right_eye],
             [x_nose, y_nose],
-            [x_left_mouth, y_left_mouth],
+            [x_left_mouth, y_left_mouth ],
             [x_right_mouth, y_right_mouth],
         ]
     )
@@ -266,7 +308,7 @@ def new_Pix2PixModel_scratch(image, mask):
     n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
         FACE_DETECT_INPUT_KEYS].input_data.shape
     blob = cv.resize(array, (w_face_detect, h_face_detect))  # Resize width & height
-    # blob = blob.transpose((2, 0, 1))  # Change data layout from HWC to CHW
+    #blob = blob.transpose((2, 0, 1))  # Change data layout from HWC to CHW
     blob = blob.reshape((n_face_detect, c_face_detect, h_face_detect, w_face_detect))
     req_handle = exec_face_detect.start_async(
         request_id=0, inputs={FACE_DETECT_INPUT_KEYS: blob[0]})
@@ -576,7 +618,7 @@ if __name__ == "__main__":
         opt.test_mode = 'Full'
         opt.non_local = ''
         parameter_set(opt)
-        model = Pix2PixHDModel_Mapping()
+        model = Pix2PixHDModel_Mapping_No_Scratch()
 
         model.initialize(opt)
         model.eval()
@@ -610,14 +652,13 @@ if __name__ == "__main__":
             origin = input
             input = img_transform(input)
             input = input.unsqueeze(0)
-            mask = torch.zeros_like(input)
 
-            try:
-                generated = model.forward(input, mask)
-                # checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping', generated)
-            except Exception as ex:
-                print(f'Skip {input_name} due to an error:\n {str(ex)}')
-                continue
+            with torch.no_grad():
+                generated = model.forward(input)
+            checkNewModel(model, input, 'Pix2PixHDModel_Mapping_No_Scratch', generated)
+            # except Exception as ex:
+            #     print(f'Skip {input_name} due to an error:\n {str(ex)}')
+            #     continue
 
             if input_name.endswith(".jpg"):
                 input_name = f'{input_name[:-4]}.png'
@@ -690,7 +731,6 @@ if __name__ == "__main__":
 
             scratch_image = transformed_image_PIL.convert("L")
             scratch_image = tv.transforms.ToTensor()(scratch_image)
-
             scratch_image = tv.transforms.Normalize([0.5], [0.5])(scratch_image)
 
             scratch_image = torch.unsqueeze(scratch_image, 0)
@@ -709,99 +749,100 @@ if __name__ == "__main__":
             )
             transformed_image_PIL.save(os.path.join(input_dir, f'{image_name[:-4]}.png'))
 
-        opt.Scratch_and_Quality_restore = True
-        opt.test_input = new_input
-        opt.test_mask = new_mask
-        opt.outputs_dir = stage_1_output_dir
-        opt.Quality_restore = False
-        parameter_set(opt)
-        model = Pix2PixHDModel_Mapping()
 
-        model.initialize(opt)
-        model.eval()
+            opt.Scratch_and_Quality_restore = True
+            opt.test_input = new_input
+            opt.test_mask = new_mask
+            opt.outputs_dir = stage_1_output_dir
+            opt.Quality_restore = False
+            parameter_set(opt)
+            model = Pix2PixHDModel_Mapping()
 
-        if not os.path.exists(f'{opt.outputs_dir}/input_image'):
-            os.makedirs(f'{opt.outputs_dir}/input_image')
-        if not os.path.exists(f'{opt.outputs_dir}/restored_image'):
-            os.makedirs(f'{opt.outputs_dir}/restored_image')
-        if not os.path.exists(f'{opt.outputs_dir}/origin'):
-            os.makedirs(f'{opt.outputs_dir}/origin')
+            model.initialize(opt)
+            model.eval()
 
-        input_loader = os.listdir(opt.test_input)
-        dataset_size = len(input_loader)
-        input_loader.sort()
+            if not os.path.exists(f'{opt.outputs_dir}/input_image'):
+                os.makedirs(f'{opt.outputs_dir}/input_image')
+            if not os.path.exists(f'{opt.outputs_dir}/restored_image'):
+                os.makedirs(f'{opt.outputs_dir}/restored_image')
+            if not os.path.exists(f'{opt.outputs_dir}/origin'):
+                os.makedirs(f'{opt.outputs_dir}/origin')
 
-        if opt.test_mask:
-            mask_loader = os.listdir(opt.test_mask)
-            dataset_size = len(os.listdir(opt.test_mask))
-            mask_loader.sort()
+            input_loader = os.listdir(opt.test_input)
+            dataset_size = len(input_loader)
+            input_loader.sort()
 
-        img_transform = transforms.Compose(
-            [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
-        )
-        mask_transform = transforms.ToTensor()
+            if opt.test_mask:
+                mask_loader = os.listdir(opt.test_mask)
+                dataset_size = len(os.listdir(opt.test_mask))
+                mask_loader.sort()
 
-        for i in range(dataset_size):
+            img_transform = transforms.Compose(
+                [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
+            )
+            mask_transform = transforms.ToTensor()
 
-            input_name = input_loader[i]
-            input_file = os.path.join(opt.test_input, input_name)
-            if not os.path.isfile(input_file):
-                print(f'Skipping non-file {input_name}')
-                continue
-            input = Image.open(input_file).convert("RGB")
+            for i in range(dataset_size):
 
-            print(f'Now you are processing {input_name}')
+                input_name = input_loader[i]
+                input_file = os.path.join(opt.test_input, input_name)
+                if not os.path.isfile(input_file):
+                    print(f'Skipping non-file {input_name}')
+                    continue
+                input = Image.open(input_file).convert("RGB")
 
-            if opt.NL_use_mask:
-                mask_name = mask_loader[i]
-                mask = Image.open(os.path.join(opt.test_mask, mask_name)).convert("RGB")
-                origin = input
-                input = irregular_hole_synthesize(input, mask)
-                mask = mask_transform(mask)
-                mask = mask[:1, :, :]  # Convert to single channel
-                mask = mask.unsqueeze(0)
-                input = img_transform(input)
-                input = input.unsqueeze(0)
-            else:
-                if opt.test_mode == "Scale":
-                    input = data_transforms(input, scale=True)
-                if opt.test_mode == "Full":
-                    input = data_transforms(input, scale=False)
-                if opt.test_mode == "Crop":
-                    input = data_transforms_rgb_old(input)
-                origin = input
-                input = img_transform(input)
-                input = input.unsqueeze(0)
-                mask = torch.zeros_like(input)
-            # Necessary input
+                print(f'Now you are processing {input_name}')
 
-            try:
-                generated = model.forward(input, mask)
+                if opt.NL_use_mask:
+                    mask_name = mask_loader[i]
+                    mask = Image.open(os.path.join(opt.test_mask, mask_name)).convert("RGB")
+                    origin = input
+                    input = irregular_hole_synthesize(input, mask)
+                    mask = mask_transform(mask)
+                    mask = mask[:1, :, :]  # Convert to single channel
+                    mask = mask.unsqueeze(0)
+                    input = img_transform(input)
+                    input = input.unsqueeze(0)
+                else:
+                    if opt.test_mode == "Scale":
+                        input = data_transforms(input, scale=True)
+                    if opt.test_mode == "Full":
+                        input = data_transforms(input, scale=False)
+                    if opt.test_mode == "Crop":
+                        input = data_transforms_rgb_old(input)
+                    origin = input
+                    input = img_transform(input)
+                    input = input.unsqueeze(0)
+                    mask = torch.zeros_like(input)
+                # Necessary input
+
+                with torch.no_grad():
+                    generated = model.forward(input, mask)
                 # new_generated = torch.from_numpy(new_Pix2PixModel_scratch(input, mask))
-                # checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping_scratch', generated)
-            except Exception as ex:
-                print(f'Skip {input_name} due to an error:\n {str(ex)}')
-                continue
+                checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping_scratch', generated)
+                # except Exception as ex:
+                #     print(f'Skip {input_name} due to an error:\n {str(ex)}')
+                #     continue
 
-            if input_name.endswith(".jpg"):
-                input_name = f'{input_name[:-4]}.png'
+                if input_name.endswith(".jpg"):
+                    input_name = f'{input_name[:-4]}.png'
 
-            vutils.save_image(
-                (input + 1.0) / 2.0,
-                f'{opt.outputs_dir}/input_image/{input_name}',
-                nrow=1,
-                padding=0,
-                normalize=True,
-            )
-            vutils.save_image(
-                (generated.data.cpu() + 1.0) / 2.0,
-                f'{opt.outputs_dir}/restored_image/{input_name}',
-                nrow=1,
-                padding=0,
-                normalize=True,
-            )
+                vutils.save_image(
+                    (input + 1.0) / 2.0,
+                    f'{opt.outputs_dir}/input_image/{input_name}',
+                    nrow=1,
+                    padding=0,
+                    normalize=True,
+                )
+                vutils.save_image(
+                    (generated.data.cpu() + 1.0) / 2.0,
+                    f'{opt.outputs_dir}/restored_image/{input_name}',
+                    nrow=1,
+                    padding=0,
+                    normalize=True,
+                )
 
-            origin.save(f'{opt.outputs_dir}/origin/{input_name}')
+                origin.save(f'{opt.outputs_dir}/origin/{input_name}')
 
     # Solve the case when there is no face in the old photo
     stage_1_results = os.path.join(stage_1_output_dir, "restored_image")
@@ -830,6 +871,7 @@ if __name__ == "__main__":
     os.makedirs(url, exist_ok=True)
     os.makedirs(save_url, exist_ok=True)
 
+    map_id = {}
     for x in os.listdir(url):
         img_url = os.path.join(url, x)
         pil_img = Image.open(img_url).convert("RGB")
@@ -844,15 +886,18 @@ if __name__ == "__main__":
         else:
             for face_id, current_face in enumerate(faces):
                 img_name = f'{x[:-4]}_{face_id + 1}'
-                current_fl = new_landmark_locator(image, current_face)
+                os.makedirs(os.path.join(opts.output_folder, "debug_stage2"), exist_ok=True)
+                save_path = os.path.join(opts.output_folder, "debug_stage2", f'{img_name}.png')
+                current_fl = new_landmark_locator(image, current_face, save_path)
 
                 affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3,
-                                                       inverse=False).params
+                                                      inverse=False).params
                 aligned_face = warp(image, affine, output_shape=(256, 256, 3))
                 io.imsave(os.path.join(save_url, f'{img_name}.png'), img_as_ubyte(aligned_face))
 
-    print("Finish Stage 2 ...\n")
-
+    # print("Finish Stage 2 ...\n")
+    # print("Please check stage 2 folder\n")
+    # exit()
     # Stage 3: Face Restore
     print("Running Stage 3: Face Enhancement")
     stage_3_input_mask = "./"
@@ -869,7 +914,33 @@ if __name__ == "__main__":
     opt.results_dir = stage_3_output_dir
     dataloader = data.create_dataloader(opt)
 
+    #model = Pix2PixModel(opt)
+    #model.eval()
+
     single_save_url = os.path.join(opt.checkpoints_dir, opt.name, opt.results_dir, "each_img")
+
+    def remove_all_spectral_norm(item):
+        if isinstance(item, nn.Module):
+            try:
+                nn.utils.remove_spectral_norm(item)
+            except Exception:
+                pass
+
+            for child in item.children():
+                remove_all_spectral_norm(child)
+
+        if isinstance(item, nn.ModuleList):
+            for module in item:
+                remove_all_spectral_norm(module)
+
+        if isinstance(item, nn.Sequential):
+            modules = item.children()
+            for module in modules:
+                remove_all_spectral_norm(module)
+
+    model_convert = Pix2PixModelFake(opt).cpu()
+    remove_all_spectral_norm(model_convert)
+    model_convert.eval()
 
     if not os.path.exists(single_save_url):
         os.makedirs(single_save_url)
@@ -877,12 +948,26 @@ if __name__ == "__main__":
     for i, data_i in enumerate(dataloader):
         if i * opt.batchSize >= opt.how_many:
             break
-        for j in range(len(data_i['image'])):
-            generated = new_Pix2PixModel(data_i['image'][j].cpu())
-            generated = torch.tensor(generated)
-            img_path = data_i["path"][j]
 
-            img_name = os.path.split(img_path)[-1]
+        # with torch.no_grad():
+        #     generated_old = model_convert(data_i)
+        # for j in range(len(data_i['image'])):
+        #     generated = new_Pix2PixModel(data_i['image'][j].cpu())
+        #     generated = torch.tensor(generated)
+        #     img_path = data_i["path"][j]
+
+
+        with torch.no_grad():
+            generated = model_convert(data_i["image"])
+        if i==0:
+            image_ = data_i["image"].cpu()
+            semantics_ = data_i["label"].cpu()
+            with torch.no_grad():
+                checkNewModel(model_convert, image_, "Pix2Pix", generated)
+
+        img_path = data_i["path"]
+        for b in range(generated.shape[0]):
+            img_name = os.path.split(img_path[b])[-1]
             save_img_url = os.path.join(single_save_url, img_name)
 
             vutils.save_image((generated + 1) / 2, save_img_url)

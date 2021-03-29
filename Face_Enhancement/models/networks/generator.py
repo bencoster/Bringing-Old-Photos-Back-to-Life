@@ -102,22 +102,14 @@ class SPADEGenerator(BaseNetwork):
 
         return sw, sh
 
-    def forward(self, input, degraded_image, z=None):
-        seg = input
+    def forward(self, seg, degraded_image, z=None):
 
-        if self.opt.use_vae:
-            # we sample z from unit normal and reshape the tensor
-            if z is None:
-                z = torch.randn(input.size(0), self.opt.z_dim, dtype=torch.float32, device=input.get_device())
-            x = self.fc(z)
-            x = x.view(-1, 16 * self.opt.ngf, self.sh, self.sw)
+        # we downsample segmap and run convolution
+        if self.opt.no_parsing_map:
+            x = F.interpolate(degraded_image, size=(self.sh, self.sw), mode="bilinear")
         else:
-            # we downsample segmap and run convolution
-            if self.opt.no_parsing_map:
-                x = F.interpolate(degraded_image, size=(self.sh, self.sw), mode="bilinear")
-            else:
-                x = F.interpolate(seg, size=(self.sh, self.sw), mode="nearest")
-            x = self.fc(x)
+            x = F.interpolate(seg, size=(self.sh, self.sw), mode="nearest")
+        x = self.fc(x)
 
         x = self.head_0(x, seg, degraded_image)
 

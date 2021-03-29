@@ -84,7 +84,8 @@ class SPADE(nn.Module):
         normalized = self.param_free_norm(x)
 
         # Part 2. produce scaling and bias conditioned on semantic map
-        segmap = F.interpolate(segmap, size=x.size()[2:], mode="nearest")
+        if not self.opt.no_parsing_map:
+            segmap = F.interpolate(segmap, size=x.size()[2:], mode="nearest")
         degraded_face = F.interpolate(degraded_image, size=x.size()[2:], mode="bilinear")
 
         if self.opt.no_parsing_map:

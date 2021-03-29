@@ -450,15 +450,14 @@ class NonLocalBlock2D_with_mask_Res(nn.Module):
 
         tmp = 1 - mask
         mask = F.interpolate(mask, (x.size(2), x.size(3)), mode="bilinear")
-        mask[mask > 0] = 1.0
         mask = 1 - mask
+        mask = mask.floor()
 
         tmp = F.interpolate(tmp, (x.size(2), x.size(3)))
         mask *= tmp
 
         mask_expand = mask.view(batch_size, 1, -1)
         mask_expand = mask_expand.repeat(1, x.size(2) * x.size(3), 1)
-
         # mask = 1 - mask
         # mask=F.interpolate(mask,(x.size(2),x.size(3)))
         # mask_expand=mask.view(batch_size,1,-1)
@@ -472,7 +471,10 @@ class NonLocalBlock2D_with_mask_Res(nn.Module):
 
         f_div_C = mask_expand * f_div_C
         if self.renorm:
-            f_div_C = F.normalize(f_div_C, p=1, dim=2)
+            # f_div_C = F.normalize(f_div_C, p=1, dim=2)
+            # normalize uses wrong functions in some PyTorch versions, so we re-implement it here
+            denom = f_div_C.norm(1, 2, keepdim=True).clamp(min=1e-12).expand_as(f_div_C)
+            f_div_C /= denom
 
         ###########################
 
