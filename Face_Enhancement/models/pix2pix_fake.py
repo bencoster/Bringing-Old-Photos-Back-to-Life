@@ -33,35 +33,11 @@ class Pix2PixModel(torch.nn.Module):
     # of deep networks. We used this approach since DataParallel module
     # can't parallelize custom functions, we branch to different
     # routines based on |mode|.
-    def forward(self, data, mode = "inference"):
-        input_semantics, real_image, degraded_image = self.preprocess_input(data)
-        with torch.no_grad():
-            fake_image, _ = self.generate_fake(input_semantics, degraded_image, real_image)
+    
+    def forward(self, image, input_semantics=None):
+        fake_image = self.netG(input_semantics, image)
         return fake_image
 
-    def create_optimizers(self, opt):
-        G_params = list(self.netG.parameters())
-        if opt.use_vae:
-            G_params += list(self.netE.parameters())
-        if opt.isTrain:
-            D_params = list(self.netD.parameters())
-
-        beta1, beta2 = opt.beta1, opt.beta2
-        if opt.no_TTUR:
-            G_lr, D_lr = opt.lr, opt.lr
-        else:
-            G_lr, D_lr = opt.lr / 2, opt.lr * 2
-
-        optimizer_G = torch.optim.Adam(G_params, lr=G_lr, betas=(beta1, beta2))
-        optimizer_D = torch.optim.Adam(D_params, lr=D_lr, betas=(beta1, beta2))
-
-        return optimizer_G, optimizer_D
-
-    def save(self, epoch):
-        util.save_network(self.netG, "G", epoch, self.opt)
-        util.save_network(self.netD, "D", epoch, self.opt)
-        if self.opt.use_vae:
-            util.save_network(self.netE, "E", epoch, self.opt)
 
     ############################################################################
     # Private helper methods
@@ -111,50 +87,6 @@ class Pix2PixModel(torch.nn.Module):
 
         return data["label"], data["image"], data["degraded_image"]
 
-    def compute_generator_loss(self, input_semantics, degraded_image, real_image):
-        G_losses = {}
-
-        fake_image, KLD_loss = self.generate_fake(
-            input_semantics, degraded_image, real_image, compute_kld_loss=self.opt.use_vae
-        )
-
-        if self.opt.use_vae:
-            G_losses["KLD"] = KLD_loss
-
-        pred_fake, pred_real = self.discriminate(input_semantics, fake_image, real_image)
-
-        G_losses["GAN"] = self.criterionGAN(pred_fake, True, for_discriminator=False)
-
-        if not self.opt.no_ganFeat_loss:
-            num_D = len(pred_fake)
-            GAN_Feat_loss = self.FloatTensor(1).fill_(0)
-            for i in range(num_D):  # for each discriminator
-                # last output is the final prediction, so we exclude it
-                num_intermediate_outputs = len(pred_fake[i]) - 1
-                for j in range(num_intermediate_outputs):  # for each layer output
-                    unweighted_loss = self.criterionFeat(pred_fake[i][j], pred_real[i][j].detach())
-                    GAN_Feat_loss += unweighted_loss * self.opt.lambda_feat / num_D
-            G_losses["GAN_Feat"] = GAN_Feat_loss
-
-        if not self.opt.no_vgg_loss:
-            G_losses["VGG"] = self.criterionVGG(fake_image, real_image) * self.opt.lambda_vgg
-
-        return G_losses, fake_image
-
-    def compute_discriminator_loss(self, input_semantics, degraded_image, real_image):
-        D_losses = {}
-        with torch.no_grad():
-            fake_image, _ = self.generate_fake(input_semantics, degraded_image, real_image)
-            fake_image = fake_image.detach()
-            fake_image.requires_grad_()
-
-        pred_fake, pred_real = self.discriminate(input_semantics, fake_image, real_image)
-
-        D_losses["D_Fake"] = self.criterionGAN(pred_fake, False, for_discriminator=True)
-        D_losses["D_real"] = self.criterionGAN(pred_real, True, for_discriminator=True)
-
-        return D_losses
-
     def encode_z(self, real_image):
         mu, logvar = self.netE(real_image)
         z = self.reparameterize(mu, logvar)
@@ -162,19 +94,10 @@ class Pix2PixModel(torch.nn.Module):
 
     def generate_fake(self, input_semantics, degraded_image, real_image, compute_kld_loss=False):
         z = None
-        KLD_loss = None
-        if self.opt.use_vae:
-            z, mu, logvar = self.encode_z(real_image)
-            if compute_kld_loss:
-                KLD_loss = self.KLDLoss(mu, logvar) * self.opt.lambda_kld
 
         fake_image = self.netG(input_semantics, degraded_image, z=z)
 
-        assert (
-            not compute_kld_loss
-        ) or self.opt.use_vae, "You cannot compute KLD loss if opt.use_vae == False"
-
-        return fake_image, KLD_loss
+        return fake_image
 
     # Given fake and real image, return the prediction of discriminator
     # for each fake and real image.

@@ -59,19 +59,81 @@ class Pix2PixHDModel_Mapping(BaseModel):
     def name(self):
         return "Pix2PixHDModel_Mapping"
 
-    def init_loss_filter(self, use_gan_feat_loss, use_vgg_loss, use_smooth_l1, stage_1_feat_l2):
-        flags = (True, True, use_gan_feat_loss, use_vgg_loss, True, True, use_smooth_l1, stage_1_feat_l2)
+    def initialize(self, opt):
+        BaseModel.initialize(self, opt)
+        if opt.resize_or_crop != "none" or not opt.isTrain:
+            torch.backends.cudnn.benchmark = True
+        self.isTrain = opt.isTrain
+        input_nc = opt.label_nc if opt.label_nc != 0 else opt.input_nc
 
-        def loss_filter(g_feat_l2, g_gan, g_gan_feat, g_vgg, d_real, d_fake, smooth_l1, stage_1_feat_l2):
-            return [
-                l
-                for (l, f) in zip(
-                    (g_feat_l2, g_gan, g_gan_feat, g_vgg, d_real, d_fake, smooth_l1, stage_1_feat_l2), flags
-                )
-                if f
-            ]
+        ##### define networks
+        # Generator network
+        netG_input_nc = input_nc
+        self.netG_A = networks.GlobalGenerator_DCDCv2(
+            netG_input_nc,
+            opt.output_nc,
+            opt.ngf,
+            opt.k_size,
+            opt.n_downsample_global,
+            networks.get_norm_layer(norm_type=opt.norm),
+            opt=opt,
+        )
+        self.netG_B = networks.GlobalGenerator_DCDCv2(
+            netG_input_nc,
+            opt.output_nc,
+            opt.ngf,
+            opt.k_size,
+            opt.n_downsample_global,
+            networks.get_norm_layer(norm_type=opt.norm),
+            opt=opt,
+        )
 
-        return loss_filter
+        self.mapping_net = Mapping_Model_with_mask(
+            min(opt.ngf * 2 ** opt.n_downsample_global, opt.mc),
+            opt.map_mc,
+            n_blocks=opt.mapping_n_block,
+            opt=opt,
+        )
+
+        self.mapping_net.apply(networks.weights_init)
+
+        if opt.load_pretrain != "":
+            self.load_network(self.mapping_net, "mapping_net", opt.which_epoch, opt.load_pretrain)
+
+        if not opt.no_load_VAE:
+
+            self.load_network(self.netG_A, "G", opt.use_vae_which_epoch, opt.load_pretrainA)
+            self.load_network(self.netG_B, "G", opt.use_vae_which_epoch, opt.load_pretrainB)
+            for param in self.netG_A.parameters():
+                param.requires_grad = False
+            for param in self.netG_B.parameters():
+                param.requires_grad = False
+            self.netG_A.eval()
+            self.netG_B.eval()
+
+        if opt.gpu_ids[0] < 0:
+            self.netG_A.cpu()
+            self.netG_B.cpu()
+            self.mapping_net.cpu()
+        else:
+            self.netG_A.cuda(opt.gpu_ids[0])
+            self.netG_B.cuda(opt.gpu_ids[0])
+            self.mapping_net.cuda(opt.gpu_ids[0])
+        self.load_network(self.mapping_net, "mapping_net", opt.which_epoch)
+
+    def inference(self, label, inst):
+        label_feat = self.netG_A.forward(label, flow="enc")
+        label_feat_map = self.mapping_net(label_feat, inst)
+        fake_image = self.netG_B.forward(label_feat_map, flow="dec")
+        return fake_image
+
+    def forward(self, label, inst):
+        return self.inference(label, inst)
+
+
+class Pix2PixHDModel_Mapping_No_Scratch(BaseModel):
+    def name(self):
+        return "Pix2PixHDModel_Mapping"
 
     def initialize(self, opt):
         BaseModel.initialize(self, opt)
@@ -102,20 +164,12 @@ class Pix2PixHDModel_Mapping(BaseModel):
             opt=opt,
         )
 
-        if opt.non_local == "Setting_42":
-            self.mapping_net = Mapping_Model_with_mask(
-                min(opt.ngf * 2 ** opt.n_downsample_global, opt.mc),
-                opt.map_mc,
-                n_blocks=opt.mapping_n_block,
-                opt=opt,
-            )
-        else:
-            self.mapping_net = Mapping_Model(
-                min(opt.ngf * 2 ** opt.n_downsample_global, opt.mc),
-                opt.map_mc,
-                n_blocks=opt.mapping_n_block,
-                opt=opt,
-            )
+        self.mapping_net = Mapping_Model(
+            min(opt.ngf * 2 ** opt.n_downsample_global, opt.mc),
+            opt.map_mc,
+            n_blocks=opt.mapping_n_block,
+            opt=opt,
+        )
 
         self.mapping_net.apply(networks.weights_init)
 
@@ -143,20 +197,11 @@ class Pix2PixHDModel_Mapping(BaseModel):
             self.mapping_net.cuda(opt.gpu_ids[0])
         self.load_network(self.mapping_net, "mapping_net", opt.which_epoch)
 
-    def inference(self, label, inst):
-        input_concat = label.data
-        inst_data = inst
+    def forward(self, label):
 
-        label_feat = self.netG_A.forward(input_concat, flow="enc")
-
-        if self.opt.NL_use_mask:
-            label_feat_map = self.mapping_net(label_feat.detach(), inst_data)
-        else:
-            label_feat_map = self.mapping_net(label_feat.detach())
-
+        label_feat = self.netG_A.forward(label, flow="enc")
+        label_feat_map = self.mapping_net(label_feat)
         fake_image = self.netG_B.forward(label_feat_map, flow="dec")
         return fake_image
 
-    def forward(self, label, inst):
-        return self.inference(label, inst)
 

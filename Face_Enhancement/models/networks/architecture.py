@@ -48,7 +48,7 @@ class SPADEResnetBlock(nn.Module):
     # the semantic segmentation map as input
     def forward(self, x, seg, degraded_image):
         x_s = self.shortcut(x, seg, degraded_image)
-
+        asd = self.conv_0(self.actvn(self.norm_0(x, seg, degraded_image)))
         dx = self.conv_0(self.actvn(self.norm_0(x, seg, degraded_image)))
         dx = self.conv_1(self.actvn(self.norm_1(dx, seg, degraded_image)))
 
