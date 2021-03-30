@@ -191,6 +191,28 @@ models = [
         downloader=GDrive('1Najox7cEE7x26VvOLLnH3q6ArL16KT8t'),
         sha='9dc129e003b2a120820a44bbe67184757e0da52a',
         filename='models/Pix2Pix.bin'),
+    Model(
+        name='Pix2PixHDModel_Mapping_No_Scratch.xml',
+        url='https://drive.google.com/uc?export=dowload&id=1taB4k0Hbv41qFa_LTj3a7NCIIyfKbIDc',
+        sha='fd390507e28ab40492fac083cef084b742872790',
+        filename='models/Pix2PixHDModel_Mapping_No_Scratch.xml'),
+    Model(
+        name='Pix2PixHDModel_Mapping_No_Scratch.bin',
+        downloader=GDrive('1tFnVt1aROd58Tb3qdawUyN1cwE74R5i3'),
+        sha='4827842923e65638403ff4f9ecb409d634b46467',
+        filename='models/Pix2PixHDModel_Mapping_No_Scratch.bin'),
+    Model(
+        name='Pix2PixHDModel_Mapping_scratch.xml',
+        url='https://drive.google.com/uc?export=dowload&id=1UYAm1lIC--7YMtJo7_rPMvSCG0l16r6T',
+        sha='563d3185d65083d17946f4bfbbba0808596b537c',
+        filename='models/Pix2PixHDModel_Mapping_scratch.xml'),
+    Model(
+        name='Pix2PixHDModel_Mapping_scratch.bin',
+        downloader=GDrive('1e3oRHRC16rNA9u4bMm8sAA9IkLtBZuo6'),
+        sha='56ad193120bbff418d373736a20b0ea3984a6e05',
+        filename='models/Pix2PixHDModel_Mapping_scratch.bin'),
+
+
 ]
 
 # Note: models will be downloaded to current working directory

@@ -11,15 +11,12 @@ from skimage.transform import SimilarityTransform
 from skimage.transform import warp
 
 import Face_Enhancement.data as data
-from Face_Enhancement.models.pix2pix_fake import Pix2PixModel as Pix2PixModelFake
 import Face_Enhancement.options.test_options as TestOptions
-from Global.detection_util.util import *
-from Global.models.mapping_model import Pix2PixHDModel_Mapping, Pix2PixHDModel_Mapping_No_Scratch
+from util import *
 
 import numpy as np
 
 import torch.onnx
-import torch.nn as nn
 import onnx
 import onnxruntime
 
@@ -642,10 +639,6 @@ if __name__ == "__main__":
         opt.test_mode = 'Full'
         opt.non_local = ''
         parameter_set(opt)
-        model = Pix2PixHDModel_Mapping_No_Scratch()
-
-        model.initialize(opt)
-        model.eval()
 
         if not os.path.exists(f'{opt.outputs_dir}/input_image'):
             os.makedirs(f'{opt.outputs_dir}/input_image')
@@ -775,10 +768,6 @@ if __name__ == "__main__":
         opt.outputs_dir = stage_1_output_dir
         opt.Quality_restore = False
         parameter_set(opt)
-        model = Pix2PixHDModel_Mapping()
-
-        model.initialize(opt)
-        model.eval()
 
         if not os.path.exists(f'{opt.outputs_dir}/input_image'):
             os.makedirs(f'{opt.outputs_dir}/input_image')
@@ -812,27 +801,15 @@ if __name__ == "__main__":
 
             print(f'Now you are processing {input_name}')
 
-            if opt.NL_use_mask:
-                mask_name = mask_loader[i]
-                mask = Image.open(os.path.join(opt.test_mask, mask_name)).convert("RGB")
-                origin = input
-                input = irregular_hole_synthesize(input, mask)
-                mask = mask_transform(mask)
-                mask = mask[:1, :, :]  # Convert to single channel
-                mask = mask.unsqueeze(0)
-                input = img_transform(input)
-                input = input.unsqueeze(0)
-            else:
-                if opt.test_mode == "Scale":
-                    input = data_transforms(input, scale=True)
-                if opt.test_mode == "Full":
-                    input = data_transforms(input, scale=False)
-                if opt.test_mode == "Crop":
-                    input = data_transforms_rgb_old(input)
-                origin = input
-                input = img_transform(input)
-                input = input.unsqueeze(0)
-                mask = torch.zeros_like(input)
+            mask_name = mask_loader[i]
+            mask = Image.open(os.path.join(opt.test_mask, mask_name)).convert("RGB")
+            origin = input
+            input = irregular_hole_synthesize(input, mask)
+            mask = mask_transform(mask)
+            mask = mask[:1, :, :]  # Convert to single channel
+            mask = mask.unsqueeze(0)
+            input = img_transform(input)
+            input = input.unsqueeze(0)
             # Necessary input
 
             try:
@@ -928,35 +905,7 @@ if __name__ == "__main__":
     opt.results_dir = stage_3_output_dir
     dataloader = data.create_dataloader(opt)
 
-    # model = Pix2PixModel(opt)
-    # model.eval()
-
     single_save_url = os.path.join(opt.checkpoints_dir, opt.name, opt.results_dir, "each_img")
-
-
-    def remove_all_spectral_norm(item):
-        if isinstance(item, nn.Module):
-            try:
-                nn.utils.remove_spectral_norm(item)
-            except Exception:
-                pass
-
-            for child in item.children():
-                remove_all_spectral_norm(child)
-
-        if isinstance(item, nn.ModuleList):
-            for module in item:
-                remove_all_spectral_norm(module)
-
-        if isinstance(item, nn.Sequential):
-            modules = item.children()
-            for module in modules:
-                remove_all_spectral_norm(module)
-
-
-    # model_convert = Pix2PixModelFake(opt).cpu()
-    # remove_all_spectral_norm(model_convert)
-    # model_convert.eval()
 
     if not os.path.exists(single_save_url):
         os.makedirs(single_save_url)
