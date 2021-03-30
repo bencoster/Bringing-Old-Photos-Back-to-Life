@@ -30,13 +30,13 @@ def checkNewModel(model, input, name, true_res, input_names=None):
     name = name + '.onnx'
     with torch.no_grad():
         torch.onnx.export(model,  # model being run
-                        input,  # model input (or a tuple for multiple inputs)
-                        name,  # where to save the model (can be a file or file-like object)
-                        input_names=input_names,
-                        export_params=True,  # store the trained parameter weights inside the model file
-                        opset_version=11,
-                        do_constant_folding=True
-                        )
+                          input,  # model input (or a tuple for multiple inputs)
+                          name,  # where to save the model (can be a file or file-like object)
+                          input_names=input_names,
+                          export_params=True,  # store the trained parameter weights inside the model file
+                          opset_version=11,
+                          do_constant_folding=True
+                          )
 
     onnx_model = onnx.load(name)
     onnx.checker.check_model(onnx_model)
@@ -91,7 +91,7 @@ def new_face_detector(image):
 
     answer = []
 
-    for detection in res[0][0]:  # TODO check if res[0][0] sorted by confidence
+    for detection in res[0][0]:
         confidence = float(detection[2])
         # Obtain Bounding box coordinate, +-10 just for padding
         xmin = int(detection[3] * image.shape[1] - 10)
@@ -134,7 +134,6 @@ def new_unet_model(image):
 
     req_handle.wait()
     res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer
-    # TODO IS IT WRONG TO CHANGE SIZE OF Scratches
     blob = cv.resize(res[0][0], (w, h))  # Resize width & height
     blob = blob.reshape((n_face_detect, c_face_detect, h, w))
     res = tv.transforms.ToTensor()(blob[0][0])
@@ -150,8 +149,7 @@ def get_landmarks(image):
 
     net = ie.read_network(model=model_xml, weights=model_bin)
 
-    if len(net.inputs["data"].layout) == 4:
-        n, c, h, w = net.inputs["data"].shape
+    n, c, h, w = net.inputs["data"].shape
 
     ih, iw = image.shape[:-1]
     if (ih, iw) != (h, w):
@@ -181,7 +179,6 @@ def get_landmarks(image):
 
 
 def new_landmark_locator(image, current_face):
-
     face_xmin = current_face['xmin']
     face_ymin = current_face['ymin']
     face_xmax = current_face['xmax']
@@ -259,26 +256,90 @@ def new_Pix2PixModel_scratch(image, mask):
 
     FACE_DETECT_XML = "models/Pix2PixHDModel_Mapping_scratch.xml"
     FACE_DETECT_BIN = "models/Pix2PixHDModel_Mapping_scratch.bin"
-    FACE_DETECT_INPUT_KEYS = 'mask.1'
-    FACE_DETECT_OUTPUT_KEYS = '1334'
+    FACE_DETECT_INPUT_KEYS_IMAGE = 'input.1'
+    FACE_DETECT_INPUT_KEYS_MASK = 'mask.1'
+    FACE_DETECT_OUTPUT_KEYS = '1351'
     net_face_detect = plugin.read_network(FACE_DETECT_XML, FACE_DETECT_BIN)
     # Load the Network using Plugin Device
 
     exec_face_detect = plugin.load_network(net_face_detect, device)
-    array = np.array(mask)[0][0]
 
     # Obtain image_count, channels, height and width
     n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
-        FACE_DETECT_INPUT_KEYS].input_data.shape
-    blob = cv.resize(array, (w_face_detect, h_face_detect))  # Resize width & height
-    # blob = blob.transpose((2, 0, 1))  # Change data layout from HWC to CHW
-    blob = blob.reshape((n_face_detect, c_face_detect, h_face_detect, w_face_detect))
+        FACE_DETECT_INPUT_KEYS_IMAGE].input_data.shape
+
+    h = h_face_detect
+    w = w_face_detect
+
+    orig_h = image.shape[2]
+    orig_w = image.shape[3]
+
+    image = np.array(image)[0]
+    image = image.transpose((1, 2, 0))
+    image = cv2.resize(image, (w, h))
+    image = image.transpose((2, 0, 1))
+
+    mask = np.array(mask)[0]
+    mask = mask.transpose((1, 2, 0))
+    mask = cv2.resize(mask, (w, h))
+    mask = np.expand_dims(mask, axis=0)
+
     req_handle = exec_face_detect.start_async(
-        request_id=0, inputs={FACE_DETECT_INPUT_KEYS: blob[0]})
+        request_id=0, inputs={FACE_DETECT_INPUT_KEYS_IMAGE: image, FACE_DETECT_INPUT_KEYS_MASK: mask})
 
     req_handle.wait()
     res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer
 
+    res = res[0]
+    res = res.transpose((1, 2, 0))
+    res = cv2.resize(res, (orig_w, orig_h))
+    res = res.transpose((2, 0, 1))
+    res = np.expand_dims(res, axis=0)
+    res = torch.from_numpy(res)
+    return res
+
+
+def new_Pix2PixModel_no_scratch(image):
+    plugin = IECore()
+
+    device = 'CPU'
+
+    FACE_DETECT_XML = "models/Pix2PixHDModel_Mapping_No_Scratch.xml"
+    FACE_DETECT_BIN = "models/Pix2PixHDModel_Mapping_No_Scratch.bin"
+    FACE_DETECT_INPUT_KEYS_IMAGE = 'input.1'
+    FACE_DETECT_OUTPUT_KEYS = '1021'
+    net_face_detect = plugin.read_network(FACE_DETECT_XML, FACE_DETECT_BIN)
+    # Load the Network using Plugin Device
+
+    exec_face_detect = plugin.load_network(net_face_detect, device)
+
+    # Obtain image_count, channels, height and width
+    n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
+        FACE_DETECT_INPUT_KEYS_IMAGE].input_data.shape
+
+    h = h_face_detect
+    w = w_face_detect
+
+    orig_h = image.shape[2]
+    orig_w = image.shape[3]
+
+    image = np.array(image)[0]
+    image = image.transpose((1, 2, 0))
+    image = cv2.resize(image, (w, h))
+    image = image.transpose((2, 0, 1))
+
+    req_handle = exec_face_detect.start_async(
+        request_id=0, inputs={FACE_DETECT_INPUT_KEYS_IMAGE: image})
+
+    req_handle.wait()
+    res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer
+
+    res = res[0]
+    res = res.transpose((1, 2, 0))
+    res = cv2.resize(res, (orig_w, orig_h))
+    res = res.transpose((2, 0, 1))
+    res = np.expand_dims(res, axis=0)
+    res = torch.from_numpy(res)
     return res
 
 
@@ -616,12 +677,7 @@ if __name__ == "__main__":
             input = img_transform(input)
             input = input.unsqueeze(0)
 
-            with torch.no_grad():
-                generated = model.forward(input)
-            #checkNewModel(model, input, 'Pix2PixHDModel_Mapping_No_Scratch', generated)
-            # except Exception as ex:
-            #     print(f'Skip {input_name} due to an error:\n {str(ex)}')
-            #     continue
+            generated = new_Pix2PixModel_no_scratch(input)
 
             if input_name.endswith(".jpg"):
                 input_name = f'{input_name[:-4]}.png'
@@ -780,9 +836,8 @@ if __name__ == "__main__":
             # Necessary input
 
             try:
-                generated = model.forward(input, mask)
-                # new_generated = torch.from_numpy(new_Pix2PixModel_scratch(input, mask))
-                checkNewModel(model, (input, mask), 'Pix2PixHDModel_Mapping_scratch', generated)
+                generated = new_Pix2PixModel_scratch(input, mask)
+
             except Exception as ex:
                 print(f'Skip {input_name} due to an error:\n {str(ex)}')
                 continue
@@ -873,10 +928,11 @@ if __name__ == "__main__":
     opt.results_dir = stage_3_output_dir
     dataloader = data.create_dataloader(opt)
 
-    #model = Pix2PixModel(opt)
-    #model.eval()
+    # model = Pix2PixModel(opt)
+    # model.eval()
 
     single_save_url = os.path.join(opt.checkpoints_dir, opt.name, opt.results_dir, "each_img")
+
 
     def remove_all_spectral_norm(item):
         if isinstance(item, nn.Module):
@@ -897,9 +953,10 @@ if __name__ == "__main__":
             for module in modules:
                 remove_all_spectral_norm(module)
 
-    model_convert = Pix2PixModelFake(opt).cpu()
-    remove_all_spectral_norm(model_convert)
-    model_convert.eval()
+
+    # model_convert = Pix2PixModelFake(opt).cpu()
+    # remove_all_spectral_norm(model_convert)
+    # model_convert.eval()
 
     if not os.path.exists(single_save_url):
         os.makedirs(single_save_url)
