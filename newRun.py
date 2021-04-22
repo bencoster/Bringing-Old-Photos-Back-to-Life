@@ -553,34 +553,26 @@ def blur_blending_cv2(im1, im2, mask):
     return im
 
 
-def parameter_set(opt):
-    # Default parameters
-    opt.serial_batches = True  # no shuffle
-    opt.no_flip = True  # no flip
-    opt.label_nc = 0
-    opt.n_downsample_global = 3
-    opt.mc = 64
-    opt.k_size = 4
-    opt.start_r = 1
-    opt.mapping_n_block = 6
-    opt.map_mc = 512
-    opt.no_instance = True
-    opt.checkpoints_dir = "Global/checkpoints/restoration"
+def save_images(input_name, input, outputs_dir, generated, origin):
+    if input_name.endswith(".jpg"):
+        input_name = f'{input_name[:-4]}.png'
 
-    if opt.Quality_restore:
-        opt.name = "mapping_quality"
-        opt.load_pretrainA = os.path.join(opt.checkpoints_dir, "VAE_A_quality")
-        opt.load_pretrainB = os.path.join(opt.checkpoints_dir, "VAE_B_quality")
-    if opt.Scratch_and_Quality_restore:
-        opt.NL_res = True
-        opt.use_SN = True
-        opt.correlation_renormalize = True
-        opt.NL_use_mask = True
-        opt.NL_fusion_method = "combine"
-        opt.non_local = "Setting_42"
-        opt.name = "mapping_scratch"
-        opt.load_pretrainA = os.path.join(opt.checkpoints_dir, "VAE_A_quality")
-        opt.load_pretrainB = os.path.join(opt.checkpoints_dir, "VAE_B_scratch")
+    vutils.save_image(
+        (input + 1.0) / 2.0,
+        f'{outputs_dir}/input_image/{input_name}',
+        nrow=1,
+        padding=0,
+        normalize=True,
+    )
+    vutils.save_image(
+        (generated.data.cpu() + 1.0) / 2.0,
+        f'{outputs_dir}/restored_image/{input_name}',
+        nrow=1,
+        padding=0,
+        normalize=True,
+    )
+
+    origin.save(f'{outputs_dir}/origin/{input_name}')
 
 
 if __name__ == "__main__":
@@ -588,66 +580,43 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_folder", type=str, default="", help="Test images")
     parser.add_argument("--output_folder", type=str, help="Restored images, please use the absolute path")
-    parser.add_argument("--checkpoint_name", type=str, default="Setting_9_epoch_100", help="choose which checkpoint")
     parser.add_argument("--with_scratch", action="store_true")
-    opts = parser.parse_args()
-
+    args = parser.parse_args()
+    input_folder = args.input_folder
+    output_folder = args.output_folder
+    with_scratch = args.with_scratch
+    checkpoint_name = "Setting_9_epoch_100"
     gpu = '-1'
 
     # resolve relative paths before changing directory
-    opts.input_folder = os.path.abspath(opts.input_folder)
-    opts.output_folder = os.path.abspath(opts.output_folder)
-    if not os.path.exists(opts.output_folder):
-        os.makedirs(opts.output_folder)
+    input_folder = os.path.abspath(input_folder)
+    output_folder = os.path.abspath(output_folder)
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
 
     main_environment = os.getcwd()
 
     # Stage 1: Overall Quality Improve
     print("Running Stage 1: Overall restoration")
-    stage_1_input_dir = opts.input_folder
-    stage_1_output_dir = os.path.join(opts.output_folder, "stage_1_restore_output")
+    stage_1_input_dir = input_folder
+    stage_1_output_dir = os.path.join(output_folder, "stage_1_restore_output")
     if not os.path.exists(stage_1_output_dir):
         os.makedirs(stage_1_output_dir)
 
-    opt = argparse.ArgumentParser()
-    opt.gpu_ids = [int(gpu)]
-    opt.isTrain = False
-    opt.resize_or_crop = 'scale_width'
-    opt.input_nc = 3
-    opt.output_nc = 3
-    opt.ngf = 64
-    opt.norm = 'instance'
-    opt.spatio_size = 64
-    opt.feat_dim = -1
-    opt.use_segmentation_model = False
-    opt.softmax_temperature = 1.0
-    opt.use_self = False
-    opt.cosin_similarity = False
-    opt.mapping_net_dilation = 1
-    opt.load_pretrain = ''
-    opt.no_load_VAE = False
-    opt.which_epoch = 'latest'
-    opt.use_vae_which_epoch = 'latest'
+    if not with_scratch:
+        Scratch_and_Quality_restore = False
+        Quality_restore = True
+        test_input = stage_1_input_dir
+        outputs_dir = stage_1_output_dir
 
-    if not opts.with_scratch:
+        if not os.path.exists(f'{outputs_dir}/input_image'):
+            os.makedirs(f'{outputs_dir}/input_image')
+        if not os.path.exists(f'{outputs_dir}/restored_image'):
+            os.makedirs(f'{outputs_dir}/restored_image')
+        if not os.path.exists(f'{outputs_dir}/origin'):
+            os.makedirs(f'{outputs_dir}/origin')
 
-        opt.Scratch_and_Quality_restore = False
-        opt.Quality_restore = True
-        opt.test_input = stage_1_input_dir
-        opt.outputs_dir = stage_1_output_dir
-        opt.NL_use_mask = False
-        opt.test_mode = 'Full'
-        opt.non_local = ''
-        parameter_set(opt)
-
-        if not os.path.exists(f'{opt.outputs_dir}/input_image'):
-            os.makedirs(f'{opt.outputs_dir}/input_image')
-        if not os.path.exists(f'{opt.outputs_dir}/restored_image'):
-            os.makedirs(f'{opt.outputs_dir}/restored_image')
-        if not os.path.exists(f'{opt.outputs_dir}/origin'):
-            os.makedirs(f'{opt.outputs_dir}/origin')
-
-        input_loader = os.listdir(opt.test_input)
+        input_loader = os.listdir(test_input)
         dataset_size = len(input_loader)
         input_loader.sort()
 
@@ -658,7 +627,7 @@ if __name__ == "__main__":
         for i in range(dataset_size):
 
             input_name = input_loader[i]
-            input_file = os.path.join(opt.test_input, input_name)
+            input_file = os.path.join(test_input, input_name)
             if not os.path.isfile(input_file):
                 print(f'Skipping non-file {input_name}')
                 continue
@@ -672,25 +641,7 @@ if __name__ == "__main__":
 
             generated = new_Pix2PixModel_no_scratch(input)
 
-            if input_name.endswith(".jpg"):
-                input_name = f'{input_name[:-4]}.png'
-
-            vutils.save_image(
-                (input + 1.0) / 2.0,
-                f'{opt.outputs_dir}/input_image/{input_name}',
-                nrow=1,
-                padding=0,
-                normalize=True,
-            )
-            vutils.save_image(
-                (generated.data.cpu() + 1.0) / 2.0,
-                f'{opt.outputs_dir}/restored_image/{input_name}',
-                nrow=1,
-                padding=0,
-                normalize=True,
-            )
-
-            origin.save(f'{opt.outputs_dir}/origin/{input_name}')
+            save_images(input_name, input, outputs_dir, generated, origin)
 
     else:
         mask_dir = os.path.join(stage_1_output_dir, "masks")
@@ -762,27 +713,24 @@ if __name__ == "__main__":
             )
             transformed_image_PIL.save(os.path.join(input_dir, f'{image_name[:-4]}.png'))
 
-        opt.Scratch_and_Quality_restore = True
-        opt.test_input = new_input
-        opt.test_mask = new_mask
-        opt.outputs_dir = stage_1_output_dir
-        opt.Quality_restore = False
-        parameter_set(opt)
+        test_input = new_input
+        test_mask = new_mask
+        outputs_dir = stage_1_output_dir
 
-        if not os.path.exists(f'{opt.outputs_dir}/input_image'):
-            os.makedirs(f'{opt.outputs_dir}/input_image')
-        if not os.path.exists(f'{opt.outputs_dir}/restored_image'):
-            os.makedirs(f'{opt.outputs_dir}/restored_image')
-        if not os.path.exists(f'{opt.outputs_dir}/origin'):
-            os.makedirs(f'{opt.outputs_dir}/origin')
+        if not os.path.exists(f'{outputs_dir}/input_image'):
+            os.makedirs(f'{outputs_dir}/input_image')
+        if not os.path.exists(f'{outputs_dir}/restored_image'):
+            os.makedirs(f'{outputs_dir}/restored_image')
+        if not os.path.exists(f'{outputs_dir}/origin'):
+            os.makedirs(f'{outputs_dir}/origin')
 
-        input_loader = os.listdir(opt.test_input)
+        input_loader = os.listdir(test_input)
         dataset_size = len(input_loader)
         input_loader.sort()
 
-        if opt.test_mask:
-            mask_loader = os.listdir(opt.test_mask)
-            dataset_size = len(os.listdir(opt.test_mask))
+        if test_mask:
+            mask_loader = os.listdir(test_mask)
+            dataset_size = len(os.listdir(test_mask))
             mask_loader.sort()
 
         img_transform = transforms.Compose(
@@ -793,7 +741,7 @@ if __name__ == "__main__":
         for i in range(dataset_size):
 
             input_name = input_loader[i]
-            input_file = os.path.join(opt.test_input, input_name)
+            input_file = os.path.join(test_input, input_name)
             if not os.path.isfile(input_file):
                 print(f'Skipping non-file {input_name}')
                 continue
@@ -802,7 +750,7 @@ if __name__ == "__main__":
             print(f'Now you are processing {input_name}')
 
             mask_name = mask_loader[i]
-            mask = Image.open(os.path.join(opt.test_mask, mask_name)).convert("RGB")
+            mask = Image.open(os.path.join(test_mask, mask_name)).convert("RGB")
             origin = input
             input = irregular_hole_synthesize(input, mask)
             mask = mask_transform(mask)
@@ -810,38 +758,13 @@ if __name__ == "__main__":
             mask = mask.unsqueeze(0)
             input = img_transform(input)
             input = input.unsqueeze(0)
-            # Necessary input
 
-            try:
-                generated = new_Pix2PixModel_scratch(input, mask)
-
-            except Exception as ex:
-                print(f'Skip {input_name} due to an error:\n {str(ex)}')
-                continue
-
-            if input_name.endswith(".jpg"):
-                input_name = f'{input_name[:-4]}.png'
-
-            vutils.save_image(
-                (input + 1.0) / 2.0,
-                f'{opt.outputs_dir}/input_image/{input_name}',
-                nrow=1,
-                padding=0,
-                normalize=True,
-            )
-            vutils.save_image(
-                (generated.data.cpu() + 1.0) / 2.0,
-                f'{opt.outputs_dir}/restored_image/{input_name}',
-                nrow=1,
-                padding=0,
-                normalize=True,
-            )
-
-            origin.save(f'{opt.outputs_dir}/origin/{input_name}')
+            generated = new_Pix2PixModel_scratch(input, mask)
+            save_images(input_name, input, outputs_dir, generated, origin)
 
     # Solve the case when there is no face in the old photo
     stage_1_results = os.path.join(stage_1_output_dir, "restored_image")
-    stage_4_output_dir = os.path.join(opts.output_folder, "final_output")
+    stage_4_output_dir = os.path.join(output_folder, "final_output")
     if not os.path.exists(stage_4_output_dir):
         os.makedirs(stage_4_output_dir)
     for x in os.listdir(stage_1_results):
@@ -854,7 +777,7 @@ if __name__ == "__main__":
 
     print("Running Stage 2: Face Detection")
     stage_2_input_dir = os.path.join(stage_1_output_dir, "restored_image")
-    stage_2_output_dir = os.path.join(opts.output_folder, "stage_2_detection_output")
+    stage_2_output_dir = os.path.join(output_folder, "stage_2_detection_output")
     if not os.path.exists(stage_2_output_dir):
         os.makedirs(stage_2_output_dir)
 
@@ -893,19 +816,18 @@ if __name__ == "__main__":
     print("Running Stage 3: Face Enhancement")
     stage_3_input_mask = "./"
     stage_3_input_face = stage_2_output_dir
-    stage_3_output_dir = os.path.join(opts.output_folder, "stage_3_face_output")
+    stage_3_output_dir = os.path.join(output_folder, "stage_3_face_output")
     if not os.path.exists(stage_3_output_dir):
         os.makedirs(stage_3_output_dir)
 
     opt = TestOptions.initialize(argparse.ArgumentParser())
     opt.old_face_folder = stage_3_input_face
     opt.old_face_label_folder = stage_3_input_mask
-    opt.name = opts.checkpoint_name
-    opt.gpu_ids = [int(gpu)]
+    opt.name = checkpoint_name
     opt.results_dir = stage_3_output_dir
     dataloader = data.create_dataloader(opt)
 
-    single_save_url = os.path.join(opt.checkpoints_dir, opt.name, opt.results_dir, "each_img")
+    single_save_url = os.path.join('ccc', opt.name, opt.results_dir, "each_img")
 
     if not os.path.exists(single_save_url):
         os.makedirs(single_save_url)
@@ -929,7 +851,7 @@ if __name__ == "__main__":
     print("Running Stage 4: Blending")
     stage_4_input_image_dir = os.path.join(stage_1_output_dir, "restored_image")
     stage_4_input_face_dir = os.path.join(stage_3_output_dir, "each_img")
-    stage_4_output_dir = os.path.join(opts.output_folder, "final_output")
+    stage_4_output_dir = os.path.join(output_folder, "final_output")
     if not os.path.exists(stage_4_output_dir):
         os.makedirs(stage_4_output_dir)
 
