@@ -434,24 +434,6 @@ def compute_transformation_matrix(img, landmark, normalize, target_face_scale=1.
     return affine
 
 
-def blur_blending(im1, im2, mask):
-    mask *= 255.0
-
-    kernel = np.ones((10, 10), np.uint8)
-    mask = cv.erode(mask, kernel, iterations=1)
-
-    mask = Image.fromarray(mask.astype("uint8")).convert("L")
-    im1 = Image.fromarray(im1.astype("uint8"))
-    im2 = Image.fromarray(im2.astype("uint8"))
-
-    mask_blur = mask.filter(ImageFilter.GaussianBlur(20))
-    im = Image.composite(im1, im2, mask)
-
-    im = Image.composite(im, im2, mask_blur)
-
-    return np.array(im) / 255.0
-
-
 def blur_blending_cv(im1, im2, mask):
     mask *= 255.0
 
