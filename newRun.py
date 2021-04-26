@@ -1,62 +1,20 @@
+import os
+import torch
+import shutil
 import argparse
-
-import cv2
 import cv2 as cv
-import skimage.io as io
-import torchvision.transforms as transforms
-from PIL import Image, ImageFile, ImageFilter
-from openvino.inference_engine import IECore
-from skimage import img_as_ubyte
-from skimage.transform import SimilarityTransform
-from skimage.transform import warp
-
-import Face_Enhancement.data as data
-import Face_Enhancement.options.test_options as TestOptions
-from util import *
-
 import numpy as np
-
-import torch.onnx
-import onnx
-import onnxruntime
+import skimage.io as io
+import torchvision as tv
+from skimage import img_as_ubyte
+from skimage.transform import warp
+import torchvision.utils as vutils
+import torchvision.transforms as transforms
+from openvino.inference_engine import IECore
+from PIL import Image, ImageFile, ImageFilter
+from skimage.transform import SimilarityTransform
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-
-
-def checkNewModel(model, input, name, true_res, input_names=None):
-    name = name + '.onnx'
-    with torch.no_grad():
-        torch.onnx.export(model,  # model being run
-                          input,  # model input (or a tuple for multiple inputs)
-                          name,  # where to save the model (can be a file or file-like object)
-                          input_names=input_names,
-                          export_params=True,  # store the trained parameter weights inside the model file
-                          opset_version=11,
-                          do_constant_folding=True
-                          )
-
-    onnx_model = onnx.load(name)
-    onnx.checker.check_model(onnx_model)
-
-    ort_session = onnxruntime.InferenceSession(name)
-
-    def to_numpy(tensor):
-        return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
-
-    # compute ONNX Runtime output prediction
-    if type(input) is tuple:
-        if len(ort_session.get_inputs()) > 1:
-            ort_inputs = {ort_session.get_inputs()[i].name: to_numpy(input_i) for i, input_i in enumerate(input)}
-        else:
-            ort_inputs = {ort_session.get_inputs()[0].name: to_numpy(input[0])}
-    else:
-        ort_inputs = {ort_session.get_inputs()[0].name: to_numpy(input)}
-    ort_outs = ort_session.run(None, ort_inputs)
-
-    # compare ONNX Runtime and PyTorch results
-    np.testing.assert_allclose(to_numpy(true_res), ort_outs[0], rtol=1e01, atol=1e-03)
-
-    print("Exported model has been tested with ONNXRuntime, and the result looks good!")
 
 
 def new_face_detector(image):
@@ -146,11 +104,11 @@ def get_landmarks(image):
 
     net = ie.read_network(model=model_xml, weights=model_bin)
 
-    n, c, h, w = net.inputs["data"].shape
+    n, c, h, w = net.input_info["data"].input_data.shape
 
     ih, iw = image.shape[:-1]
     if (ih, iw) != (h, w):
-        image = cv2.resize(image, (w, h))
+        image = cv.resize(image, (w, h))
     image = image.transpose((2, 0, 1))
 
     out_blob = next(iter(net.outputs))
@@ -220,7 +178,7 @@ def new_landmark_locator(image, current_face):
     return results
 
 
-def new_Pix2PixModel(data_i):
+def new_Pix2Pix_face(data_i):
     plugin = IECore()
 
     device = 'CPU'
@@ -246,16 +204,23 @@ def new_Pix2PixModel(data_i):
     return res
 
 
-def new_Pix2PixModel_scratch(image, mask):
+def new_Pix2PixHDModel(image, mask=None):
     plugin = IECore()
 
     device = 'CPU'
 
-    FACE_DETECT_XML = "models/Pix2PixHDModel_Mapping_scratch.xml"
-    FACE_DETECT_BIN = "models/Pix2PixHDModel_Mapping_scratch.bin"
-    FACE_DETECT_INPUT_KEYS_IMAGE = 'input.1'
-    FACE_DETECT_INPUT_KEYS_MASK = 'mask.1'
-    FACE_DETECT_OUTPUT_KEYS = '1351'
+    if mask is not None:
+        FACE_DETECT_XML = "models/Pix2PixHDModel_Mapping_scratch.xml"
+        FACE_DETECT_BIN = "models/Pix2PixHDModel_Mapping_scratch.bin"
+        FACE_DETECT_INPUT_KEYS_IMAGE = 'input.1'
+        FACE_DETECT_INPUT_KEYS_MASK = 'mask.1'
+        FACE_DETECT_OUTPUT_KEYS = '1351'
+    else:
+        FACE_DETECT_XML = "models/Pix2PixHDModel_Mapping_No_Scratch.xml"
+        FACE_DETECT_BIN = "models/Pix2PixHDModel_Mapping_No_Scratch.bin"
+        FACE_DETECT_INPUT_KEYS_IMAGE = 'input.1'
+        FACE_DETECT_OUTPUT_KEYS = '1021'
+
     net_face_detect = plugin.read_network(FACE_DETECT_XML, FACE_DETECT_BIN)
     # Load the Network using Plugin Device
 
@@ -273,71 +238,35 @@ def new_Pix2PixModel_scratch(image, mask):
 
     image = np.array(image)[0]
     image = image.transpose((1, 2, 0))
-    image = cv2.resize(image, (w, h))
+    image = cv.resize(image, (w, h))
     image = image.transpose((2, 0, 1))
 
-    mask = np.array(mask)[0]
-    mask = mask.transpose((1, 2, 0))
-    mask = cv2.resize(mask, (w, h))
-    mask = np.expand_dims(mask, axis=0)
+    if mask is not None:
+        mask = np.array(mask)[0]
+        mask = mask.transpose((1, 2, 0))
+        mask = cv.resize(mask, (w, h))
+        mask = np.expand_dims(mask, axis=0)
 
-    req_handle = exec_face_detect.start_async(
-        request_id=0, inputs={FACE_DETECT_INPUT_KEYS_IMAGE: image, FACE_DETECT_INPUT_KEYS_MASK: mask})
-
+        req_handle = exec_face_detect.start_async(
+            request_id=0, inputs={FACE_DETECT_INPUT_KEYS_IMAGE: image, FACE_DETECT_INPUT_KEYS_MASK: mask})
+    else:
+        req_handle = exec_face_detect.start_async(
+            request_id=0, inputs={FACE_DETECT_INPUT_KEYS_IMAGE: image})
     req_handle.wait()
     res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer
 
     res = res[0]
     res = res.transpose((1, 2, 0))
-    res = cv2.resize(res, (orig_w, orig_h))
+    res = cv.resize(res, (orig_w, orig_h))
     res = res.transpose((2, 0, 1))
     res = np.expand_dims(res, axis=0)
     res = torch.from_numpy(res)
     return res
 
 
-def new_Pix2PixModel_no_scratch(image):
-    plugin = IECore()
-
-    device = 'CPU'
-
-    FACE_DETECT_XML = "models/Pix2PixHDModel_Mapping_No_Scratch.xml"
-    FACE_DETECT_BIN = "models/Pix2PixHDModel_Mapping_No_Scratch.bin"
-    FACE_DETECT_INPUT_KEYS_IMAGE = 'input.1'
-    FACE_DETECT_OUTPUT_KEYS = '1021'
-    net_face_detect = plugin.read_network(FACE_DETECT_XML, FACE_DETECT_BIN)
-    # Load the Network using Plugin Device
-
-    exec_face_detect = plugin.load_network(net_face_detect, device)
-
-    # Obtain image_count, channels, height and width
-    n_face_detect, c_face_detect, h_face_detect, w_face_detect = net_face_detect.input_info[
-        FACE_DETECT_INPUT_KEYS_IMAGE].input_data.shape
-
-    h = h_face_detect
-    w = w_face_detect
-
-    orig_h = image.shape[2]
-    orig_w = image.shape[3]
-
-    image = np.array(image)[0]
-    image = image.transpose((1, 2, 0))
-    image = cv2.resize(image, (w, h))
-    image = image.transpose((2, 0, 1))
-
-    req_handle = exec_face_detect.start_async(
-        request_id=0, inputs={FACE_DETECT_INPUT_KEYS_IMAGE: image})
-
-    req_handle.wait()
-    res = req_handle.output_blobs[FACE_DETECT_OUTPUT_KEYS].buffer
-
-    res = res[0]
-    res = res.transpose((1, 2, 0))
-    res = cv2.resize(res, (orig_w, orig_h))
-    res = res.transpose((2, 0, 1))
-    res = np.expand_dims(res, axis=0)
-    res = torch.from_numpy(res)
-    return res
+def mkdir_if_not(dir_path):
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
 
 
 def _standard_face_pts():
@@ -346,34 +275,21 @@ def _standard_face_pts():
     return np.reshape(pts, (5, 2))
 
 
-def data_transforms_global(img, full_size, method=Image.BICUBIC):
-    if full_size == "full_size":
-        ow, oh = img.size
-        h = int(round(oh / 16) * 16)
-        w = int(round(ow / 16) * 16)
-        if (h == oh) and (w == ow):
-            return img
-        return img.resize((w, h), method)
+def data_transforms_global(img, method=Image.BICUBIC):
+    ow, oh = img.size
+    pw, ph = ow, oh
+    if ow < oh:
+        ow = 256
+        oh = ph / pw * 256
+    else:
+        oh = 256
+        ow = pw / ph * 256
 
-    if full_size == "resize_256":
-        return img.resize((parser.image_size, parser.image_size), method)
-
-    if full_size == "scale_256":
-
-        ow, oh = img.size
-        pw, ph = ow, oh
-        if ow < oh:
-            ow = 256
-            oh = ph / pw * 256
-        else:
-            oh = 256
-            ow = pw / ph * 256
-
-        h = int(round(oh / 16) * 16)
-        w = int(round(ow / 16) * 16)
-        if (h == ph) and (w == pw):
-            return img
-        return img.resize((w, h), method)
+    h = int(round(oh / 16) * 16)
+    w = int(round(ow / 16) * 16)
+    if (h == ph) and (w == pw):
+        return img
+    return img.resize((w, h), method)
 
 
 def data_transforms(img, method=Image.BILINEAR, scale=False):
@@ -460,8 +376,8 @@ def match_histograms(src_image, ref_image):
     """
     # Split the images into the different color channels
     # b means blue, g means green and r means red
-    src_b, src_g, src_r = cv2.split(src_image)
-    ref_b, ref_g, ref_r = cv2.split(ref_image)
+    src_b, src_g, src_r = cv.split(src_image)
+    ref_b, ref_g, ref_r = cv.split(ref_image)
 
     # Compute the b, g, and r histograms separately
     # The flatten() Numpy method returns a copy of the array c
@@ -488,13 +404,13 @@ def match_histograms(src_image, ref_image):
 
     # Use the lookup function to transform the colors of the original
     # source image
-    blue_after_transform = cv2.LUT(src_b, blue_lookup_table)
-    green_after_transform = cv2.LUT(src_g, green_lookup_table)
-    red_after_transform = cv2.LUT(src_r, red_lookup_table)
+    blue_after_transform = cv.LUT(src_b, blue_lookup_table)
+    green_after_transform = cv.LUT(src_g, green_lookup_table)
+    red_after_transform = cv.LUT(src_r, red_lookup_table)
 
     # Put the image back together
-    image_after_matching = cv2.merge([blue_after_transform, green_after_transform, red_after_transform])
-    image_after_matching = cv2.convertScaleAbs(image_after_matching)
+    image_after_matching = cv.merge([blue_after_transform, green_after_transform, red_after_transform])
+    image_after_matching = cv.convertScaleAbs(image_after_matching)
 
     return image_after_matching
 
@@ -522,7 +438,7 @@ def blur_blending(im1, im2, mask):
     mask *= 255.0
 
     kernel = np.ones((10, 10), np.uint8)
-    mask = cv2.erode(mask, kernel, iterations=1)
+    mask = cv.erode(mask, kernel, iterations=1)
 
     mask = Image.fromarray(mask.astype("uint8")).convert("L")
     im1 = Image.fromarray(im1.astype("uint8"))
@@ -536,13 +452,13 @@ def blur_blending(im1, im2, mask):
     return np.array(im) / 255.0
 
 
-def blur_blending_cv2(im1, im2, mask):
+def blur_blending_cv(im1, im2, mask):
     mask *= 255.0
 
     kernel = np.ones((9, 9), np.uint8)
-    mask = cv2.erode(mask, kernel, iterations=3)
+    mask = cv.erode(mask, kernel, iterations=3)
 
-    mask_blur = cv2.GaussianBlur(mask, (25, 25), 0)
+    mask_blur = cv.GaussianBlur(mask, (25, 25), 0)
     mask_blur /= 255.0
 
     im = im1 * mask_blur + (1 - mask_blur) * im2
@@ -585,8 +501,6 @@ if __name__ == "__main__":
     input_folder = args.input_folder
     output_folder = args.output_folder
     with_scratch = args.with_scratch
-    checkpoint_name = "Setting_9_epoch_100"
-    gpu = '-1'
 
     # resolve relative paths before changing directory
     input_folder = os.path.abspath(input_folder)
@@ -639,7 +553,7 @@ if __name__ == "__main__":
             input = img_transform(input)
             input = input.unsqueeze(0)
 
-            generated = new_Pix2PixModel_no_scratch(input)
+            generated = new_Pix2PixHDModel(input)
 
             save_images(input_name, input, outputs_dir, generated, origin)
 
@@ -648,30 +562,20 @@ if __name__ == "__main__":
         new_input = os.path.join(mask_dir, "input")
         new_mask = os.path.join(mask_dir, "mask")
 
-        print("initializing the dataloader")
-        parser = argparse.ArgumentParser()
-
-        parser.GPU = int(gpu)
-        parser.test_path = stage_1_input_dir
-        parser.output_dir = mask_dir
-        parser.input_size = "scale_256"
-
         # dataloader and transformation
-        print(f'directory of testing image: {parser.test_path}')
-        imagelist = os.listdir(parser.test_path)
+        print(f'directory of testing image: {stage_1_input_dir}')
+        imagelist = os.listdir(stage_1_input_dir)
         imagelist.sort()
         total_iter = 0
 
         P_matrix = {}
-        save_url = os.path.join(parser.output_dir)
+        save_url = os.path.join(mask_dir)
         mkdir_if_not(save_url)
 
         input_dir = os.path.join(save_url, "input")
         output_dir = os.path.join(save_url, "mask")
-        # blend_output_dir=os.path.join(save_url, 'blend_output')
         mkdir_if_not(input_dir)
         mkdir_if_not(output_dir)
-        # mkdir_if_not(blend_output_dir)
 
         idx = 0
 
@@ -682,7 +586,7 @@ if __name__ == "__main__":
             print("processing", image_name)
 
             results = []
-            scratch_file = os.path.join(parser.test_path, image_name)
+            scratch_file = os.path.join(stage_1_input_dir, image_name)
             if not os.path.isfile(scratch_file):
                 print(f'Skipping non-file {image_name}')
                 continue
@@ -690,7 +594,7 @@ if __name__ == "__main__":
 
             w, h = scratch_image.size
 
-            transformed_image_PIL = data_transforms_global(scratch_image, parser.input_size)
+            transformed_image_PIL = data_transforms_global(scratch_image)
 
             scratch_image = transformed_image_PIL.convert("L")
             scratch_image = tv.transforms.ToTensor()(scratch_image)
@@ -728,10 +632,8 @@ if __name__ == "__main__":
         dataset_size = len(input_loader)
         input_loader.sort()
 
-        if test_mask:
-            mask_loader = os.listdir(test_mask)
-            dataset_size = len(os.listdir(test_mask))
-            mask_loader.sort()
+        mask_loader = os.listdir(test_mask)
+        mask_loader.sort()
 
         img_transform = transforms.Compose(
             [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
@@ -759,7 +661,7 @@ if __name__ == "__main__":
             input = img_transform(input)
             input = input.unsqueeze(0)
 
-            generated = new_Pix2PixModel_scratch(input, mask)
+            generated = new_Pix2PixHDModel(input, mask)
             save_images(input_name, input, outputs_dir, generated, origin)
 
     # Solve the case when there is no face in the old photo
@@ -820,30 +722,29 @@ if __name__ == "__main__":
     if not os.path.exists(stage_3_output_dir):
         os.makedirs(stage_3_output_dir)
 
-    opt = TestOptions.initialize(argparse.ArgumentParser())
-    opt.old_face_folder = stage_3_input_face
-    opt.old_face_label_folder = stage_3_input_mask
-    opt.name = checkpoint_name
-    opt.results_dir = stage_3_output_dir
-    dataloader = data.create_dataloader(opt)
+    single_save_url = os.path.join(stage_3_output_dir, "each_img")
 
-    single_save_url = os.path.join('ccc', opt.name, opt.results_dir, "each_img")
+    mkdir_if_not(single_save_url)
+    images_paths = os.listdir(stage_3_input_face)
+    for i in range(len(images_paths)):
 
-    if not os.path.exists(single_save_url):
-        os.makedirs(single_save_url)
+        img_path = os.path.join(stage_3_input_face, images_paths[i])
 
-    for i, data_i in enumerate(dataloader):
-        if i * opt.batchSize >= opt.how_many:
-            break
-        for j in range(len(data_i['image'])):
-            generated = new_Pix2PixModel(data_i['image'][j].cpu())
-            generated = torch.tensor(generated)
-            img_path = data_i["path"][j]
+        image = Image.open(img_path)
+        image = image.convert("RGB")
 
-            img_name = os.path.split(img_path)[-1]
-            save_img_url = os.path.join(single_save_url, img_name)
+        transform_list = [transforms.Resize([256, 256], interpolation=Image.BICUBIC)]
+        transform_list += [transforms.ToTensor()]
+        transform_list += [transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
+        image_tensor = transforms.Compose(transform_list)(image)
 
-            vutils.save_image((generated + 1) / 2, save_img_url)
+        generated = new_Pix2Pix_face(image_tensor.cpu())
+        generated = torch.tensor(generated)
+
+        img_name = os.path.split(img_path)[-1]
+        save_img_url = os.path.join(single_save_url, img_name)
+
+        vutils.save_image((generated + 1) / 2, save_img_url)
 
     print("Finish Stage 3 ...\n")
 
@@ -897,10 +798,10 @@ if __name__ == "__main__":
                 cur_face = restored_face
 
             # Histogram Color matching
-            A = cv2.cvtColor(aligned_face.astype("uint8"), cv2.COLOR_RGB2BGR)
-            B = cv2.cvtColor(cur_face.astype("uint8"), cv2.COLOR_RGB2BGR)
+            A = cv.cvtColor(aligned_face.astype("uint8"), cv.COLOR_RGB2BGR)
+            B = cv.cvtColor(cur_face.astype("uint8"), cv.COLOR_RGB2BGR)
             B = match_histograms(B, A)
-            cur_face = cv2.cvtColor(B.astype("uint8"), cv2.COLOR_BGR2RGB)
+            cur_face = cv.cvtColor(B.astype("uint8"), cv.COLOR_BGR2RGB)
 
             warped_back = warp(
                 cur_face,
@@ -918,7 +819,7 @@ if __name__ == "__main__":
                 preserve_range=True,
             )  # Nearest neighbour
 
-            blended = blur_blending_cv2(warped_back, blended, backward_mask)
+            blended = blur_blending_cv(warped_back, blended, backward_mask)
             blended *= 255.0
 
         io.imsave(os.path.join(save_url, x), img_as_ubyte(blended / 255.0))
