@@ -17,7 +17,7 @@ from skimage.transform import SimilarityTransform
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
-def new_face_detector(image):
+def face_detector(image):
     plugin = IECore()
 
     device = 'CPU'
@@ -59,7 +59,7 @@ def new_face_detector(image):
     return answer
 
 
-def new_unet_model(image):
+def unet_model(image):
     plugin = IECore()
 
     device = 'CPU'
@@ -133,7 +133,7 @@ def get_landmarks(image):
     return np.array(x), np.array(y)
 
 
-def new_landmark_locator(image, current_face):
+def landmark_locator(image, current_face):
     face_xmin = current_face['xmin']
     face_ymin = current_face['ymin']
     face_xmax = current_face['xmax']
@@ -178,7 +178,7 @@ def new_landmark_locator(image, current_face):
     return results
 
 
-def new_Pix2Pix_face(data_i):
+def Pix2Pix_face(data_i):
     plugin = IECore()
 
     device = 'CPU'
@@ -204,7 +204,7 @@ def new_Pix2Pix_face(data_i):
     return res
 
 
-def new_Pix2PixHDModel(image, mask=None):
+def Pix2PixHDModel(image, mask=None):
     plugin = IECore()
 
     device = 'CPU'
@@ -535,7 +535,7 @@ if __name__ == "__main__":
             input = img_transform(input)
             input = input.unsqueeze(0)
 
-            generated = new_Pix2PixHDModel(input)
+            generated = Pix2PixHDModel(input)
 
             save_images(input_name, input, outputs_dir, generated, origin)
 
@@ -587,7 +587,7 @@ if __name__ == "__main__":
 
             scratch_image = scratch_image.cpu()
 
-            P = torch.sigmoid(new_unet_model(scratch_image))
+            P = torch.sigmoid(unet_model(scratch_image))
             P = P.data.cpu()
 
             tv.utils.save_image(
@@ -643,7 +643,7 @@ if __name__ == "__main__":
             input = img_transform(input)
             input = input.unsqueeze(0)
 
-            generated = new_Pix2PixHDModel(input, mask)
+            generated = Pix2PixHDModel(input, mask)
             save_images(input_name, input, outputs_dir, generated, origin)
 
     # Solve the case when there is no face in the old photo
@@ -679,7 +679,7 @@ if __name__ == "__main__":
 
         image = np.array(pil_img)
 
-        faces = new_face_detector(image)
+        faces = face_detector(image)
 
         if not faces:
             print(f'Warning: There is no face in {x}')
@@ -687,7 +687,7 @@ if __name__ == "__main__":
         else:
             for face_id, current_face in enumerate(faces):
                 img_name = f'{x[:-4]}_{face_id + 1}'
-                current_fl = new_landmark_locator(image, current_face)
+                current_fl = landmark_locator(image, current_face)
 
                 affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3,
                                                        inverse=False).params
@@ -720,7 +720,7 @@ if __name__ == "__main__":
         transform_list += [transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
         image_tensor = transforms.Compose(transform_list)(image)
 
-        generated = new_Pix2Pix_face(image_tensor.cpu())
+        generated = Pix2Pix_face(image_tensor.cpu())
         generated = torch.tensor(generated)
 
         img_name = os.path.split(img_path)[-1]
@@ -752,7 +752,7 @@ if __name__ == "__main__":
         origin_width, origin_height = pil_img.size
         image = np.array(pil_img)
 
-        faces = new_face_detector(image)
+        faces = face_detector(image)
 
         if not faces:
             print(f'Warning: There is no face in {x}')
@@ -761,7 +761,7 @@ if __name__ == "__main__":
         blended = image
         for face_id, current_face in enumerate(faces):
 
-            current_fl = new_landmark_locator(image, current_face)
+            current_fl = landmark_locator(image, current_face)
 
             forward_mask = np.ones_like(image).astype("uint8")
             affine = compute_transformation_matrix(image, current_fl, False, target_face_scale=1.3, inverse=False)
